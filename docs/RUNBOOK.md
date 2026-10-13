@@ -30,17 +30,32 @@ Branch: `claude/hub-v1`. The stubs pass 34/34 end to end, and unit tests pass 78
    - tests fail and the cause isn't clear;
    - a phase can't finish without them.
 
+## The person's setup (already decided; don't re-ask)
+
+| Item | Decision |
+|---|---|
+| **Hub PC** (this machine) | Runs the hub **and** agent sessions: host `mini-1`, reached over SSH as this same user. |
+| **Second mini PC** | Host `mini-2`: agent sessions only. The person sets it up from your command sheet (phase 2). |
+| **Laptop** | Not a host. It only opens the UI in a browser, so it must be on the same tailnet. Claude Code on the laptop is not connected for now. |
+| **Phone** | Not now. Maybe later (see "Later" at the end). |
+| **Claude and Codex cloud** | Used as intended: cloud sessions and tasks are started from the hub under the hub's own account profiles. **Polling only:** no public endpoint, no Tailscale Funnel, `cloudCallbackUrl` stays unset. |
+
+What polling-only means for the person:
+- Codex cloud tasks update every `cloudPollIntervalSec`.
+- A Claude cloud session shows as running after it starts. Its result appears when the pushed `claude/*` branch is found by the GitHub scan, linked to the session.
+- Per-turn Claude cloud progress needs the cloud hooks, which are off.
+
 ## Phases
 
 | Phase | Where | Done when |
 |---|---|---|
 | 0 Gather facts | ask the person | The facts table is filled in your progress log |
 | 1 Hub machine | here | `npm test` is green in `~/agent-hub` |
-| 2 Hosts | each host | The readiness table is all ✓ |
-| 3 Config, GitHub, HTTPS, service | here | The hub service is running, every host online, the PWA reachable at `https://<tailnet name>` |
+| 2 Hosts | `mini-1` (here) and `mini-2` | The readiness table is all ✓ |
+| 3 Config, GitHub, HTTPS, service | here | The hub service is running, both hosts online, the UI reachable at `https://<tailnet name>` |
 | 4 First light (real Claude Code) | 1 host | Every listed item is VERIFIED or fixed |
 | 5 Codex, clouds, GitHub | here + 1 host | Real Codex, cloud and PR/CI work |
-| 6 Laptop and phone | the person's devices | The PWA is installed on the phone; Claude Code on the laptop can arrange the canvas |
+| 6 Laptop browser | the person's laptop | The person uses the canvas from the laptop, including Ask Claude |
 | 7 Hardware and HIL (optional) | bench host | Devices show, and one HIL plan runs |
 
 ---
@@ -51,12 +66,13 @@ Discover what you can here: `hostname`; `tailscale status --json` for the tailne
 
 | Fact | Example |
 |---|---|
-| Hosts (`id`, `user@machine`, code root). Is this machine one of them? | `mini-1 = you@minipc-a ~/code` (this machine), `mini-2 = you@minipc-b ~/code` |
+| The second mini PC: tailnet name, login user, code root | `you@minipc-b`, `~/code` (`mini-1` is this machine, as this user; ask only for its code root) |
 | Claude accounts (profile id → config dir on hosts) | `personal` → `~/.claude-personal`, `work` → `~/.claude-work` |
 | ChatGPT/Codex accounts (profile id → `CODEX_HOME` on hosts) | `personal` → `~/.codex`, `work` → `~/.codex-work` |
 | GitHub owners per account | `personal: [harwasch]`, `work: [<org>]` |
-| First-light host | one the person can watch |
-| Can you reach the other hosts with sudo? (usually no) | decides who does phase 2 there |
+| Code roots on this machine | e.g. `~/code` |
+
+The first-light host is `mini-1` (this machine), unless the person says otherwise.
 
 Record the answers in the progress log.
 
@@ -92,9 +108,9 @@ The hub runs as **this user**. Everything it owns lives in `~/.agent-hub`: its S
 - one login per profile;
 - `MaxSessions 64` in `/etc/ssh/sshd_config`, then `sudo systemctl reload ssh`.
 
-**If this machine is one of the hosts:** do the installs and the `MaxSessions` edit yourself with sudo, and add the hub key to this user's own `authorized_keys`.
+**`mini-1` (this machine):** do the installs and the `MaxSessions` edit yourself with sudo. Add the hub's public key to this user's own `~/.ssh/authorized_keys`, and check that `ssh -i ~/.agent-hub/ssh/id_ed25519 $USER@localhost true` works. Make sure an SSH server is installed and running (`openssh-server`).
 
-**[HUMAN] for other hosts:** give the person a per-host command sheet: user and key, installs, `MaxSessions`. Then the logins on every host, including this one if it is a host:
+**[HUMAN] `mini-2`:** give the person a command sheet for it: its login user plus the hub's public key in `authorized_keys`, the installs, and `MaxSessions`. Check it's reachable over the tailnet from here. Then the logins on **both** hosts:
 ```bash
 CLAUDE_CONFIG_DIR=~/.claude-personal claude    # /login, personal claude.ai
 CLAUDE_CONFIG_DIR=~/.claude-work     claude    # /login, work
@@ -128,10 +144,11 @@ For anything missing, give the exact fix and who does it. Install nothing on oth
    Repeat for each account. Verify each with `gh auth status`, a check that the credentials file exists, and `codex login status`.
 2. **Write `~/agent-hub/config/hub.config.json`** from `config/hub.config.example.json`, using the phase 0 facts:
    - `listen` `127.0.0.1:8443`, `tls: null`;
-   - `publicUrl` and `hostCallbackUrl` = `https://<tailnet name>`;
+   - `publicUrl` and `hostCallbackUrl` = `https://<tailnet name>`; leave `cloudCallbackUrl` unset (polling only);
+   - `hosts[]` = `mini-1` (target `$USER@localhost`, or this machine's tailnet name) and `mini-2`;
    - `adapters` = `claude`, `codex`, `gh`;
    - `screenshot.chromiumPath`;
-   - `hosts[]` without devices or HIL for now;
+   - no devices or HIL for now;
    - per account: `claude.configDir`, `codex.home`, `gh.configDir` plus `owners`, and `hub.claudeConfigDir` / `hub.codexHome` under `~/.agent-hub/profiles/<id>/`.
 
    Validate it with `jq .`.
@@ -149,16 +166,12 @@ For anything missing, give the exact fix and who does it. Install nothing on oth
    Then run `systemctl --user daemon-reload && systemctl --user enable --now agent-hub`.
 4. **HTTPS:** `sudo tailscale serve --bg --https=443 http://127.0.0.1:8443`.
 5. **Watch:** follow `journalctl --user -u agent-hub -f` for 60 s. Every host should go online and repos should be indexed. Fix config problems. Check that `~/.agent-hub/secrets.json` is mode 600.
-6. **[HUMAN]:**
-   - open `https://<tailnet name>` on the phone and laptop;
-   - sign in with the hub token, read on this machine with `jq -r .hubToken ~/.agent-hub/secrets.json` (tell the person to run this; don't print it yourself);
-   - on the phone, "Install app" and turn on notifications.
+6. **[HUMAN]:** the laptop is set up in phase 6. For now, check the UI from this machine, e.g. `curl -s https://<tailnet name>/healthz`.
 
 **Done when:**
 - the service is active;
-- the log shows every host online;
-- `curl -s https://<tailnet name>/healthz` succeeds;
-- the person confirms they can see the canvas.
+- the log shows `mini-1` and `mini-2` online;
+- `curl -s https://<tailnet name>/healthz` succeeds.
 
 ## Phase 4: first light with the real Claude Code (one host)
 
@@ -178,7 +191,7 @@ Work through these one at a time:
 
 Then from the PWA: chat, approve one tool call, interrupt one turn.
 
-**[HUMAN]:** ask the person to watch the canvas while you do this and to confirm what they see.
+**[HUMAN]:** ask the person to watch the canvas in the laptop browser while you do this and to confirm what they see.
 
 **Done when** each item is recorded as VERIFIED or fixed, and chat, approval and interrupt work from the PWA.
 
@@ -186,7 +199,7 @@ Then from the PWA: chat, approve one tool call, interrupt one turn.
 
 Same method as phase 4: record each result, fix the adapter, then build, test, restart, commit and push.
 
-- **Codex on the first-light host:**
+- **Codex on `mini-1`, then `mini-2`:**
   - #24 `codex app-server daemon start`;
   - #25 WebSocket over `codex app-server proxy`;
   - #23 sharing the daemon with the ChatGPT desktop app (**[HUMAN]** if they use it);
@@ -195,7 +208,7 @@ Same method as phase 4: record each result, fix the adapter, then build, test, r
 - **Clouds, run here with the hub profiles:**
   - #18, #19 `claude --cloud` output and follow-ups;
   - #33, #34, #35 `codex cloud exec`, `list` and `status`;
-  - #20 cloud repo hooks only if the person wants `cloudCallbackUrl` (it needs a public endpoint — ask first).
+  - #20 cloud repo hooks: **skip** (polling only, by decision). Confirm that a Claude cloud session's pushed `claude/*` branch is found and linked to it.
 - **GitHub, on the person's real repos (#40–#44):**
   - PR and CI on branch nodes, pagination, commit statuses, the pushed-branch scan;
   - watch `gh api rate_limit` per account for 30 min, and raise `githubPollIntervalSec` if usage is over 50% of the hourly limit.
@@ -203,17 +216,15 @@ Same method as phase 4: record each result, fix the adapter, then build, test, r
 
 **Done when** Codex local, both clouds and PR/CI work, with results recorded.
 
-## Phase 6: laptop and phone
+## Phase 6: laptop browser
 
 **[HUMAN]:**
-- **Ask Claude in the PWA:** open the panel, pick a host and account, select some nodes, and say "arrange these in a grid". Then "start a codex session on <host> to …" and Allow it.
-- **Claude Code on the laptop:** `claude mcp add --transport http agent-hub https://<tailnet name>/mcp --header "Authorization: Bearer <mcpToken>"`. The `mcpToken` is in `~/.agent-hub/secrets.json` on the hub; the person reads it themselves.
-- **Then in Claude Code on the laptop:** "Use the agent-hub tools: switch the canvas to the tree layout, arrange all session nodes in a grid, add a note summarising what each session is doing, and focus the busiest one."
-- **Claude Desktop (optional):** use the stdio bridge config in the README ("Use the canvas tools from Claude Code or Claude Desktop").
+- **Join the tailnet:** install Tailscale on the laptop and sign in to the same tailnet.
+- **Sign in:** open `https://<tailnet name>` and enter the hub token. Read it on the hub with `jq -r .hubToken ~/.agent-hub/secrets.json`; the person runs this themselves.
+- **Notifications (optional):** turn on browser notifications to get "Approval needed".
+- **Try Ask Claude:** open the panel and pick `mini-1` and an account. Select some nodes and say "arrange these in a grid", then "start a codex session on mini-2 to …", and Allow it.
 
-If `claude mcp add` or the tool calls fail, ask the person for the error and fix `/mcp` compatibility (open question #50).
-
-**Done when** the person confirms Ask Claude and the laptop both changed the canvas.
+**Done when** the person confirms they can use the canvas from the laptop, and Ask Claude changed it.
 
 ## Phase 7 (optional): hardware and HIL
 
@@ -243,6 +254,16 @@ session, when>. Follow docs/RUNBOOK.md "Rules for the agent". Read the last 300 
 `journalctl --user -u agent-hub`, the relevant docs/OPEN-QUESTIONS.md items and docs/DECISIONS.md, reproduce
 if you can, and propose the smallest fix. Show me the diff before committing.
 ```
+
+**Later (not part of this bring-up):**
+- **Phone:**
+  - It needs Tailscale on the phone, signed in to the same tailnet.
+  - Open `https://<tailnet name>`, choose "Install app" (Add to Home Screen on iOS), and turn on notifications for approvals and finished turns.
+- **Claude Code on the laptop driving the canvas:**
+  - Run `claude mcp add --transport http agent-hub https://<tailnet name>/mcp --header "Authorization: Bearer <mcpToken>"`; the token is `mcpToken` in `~/.agent-hub/secrets.json`.
+  - For Claude Desktop, use the stdio bridge config in the README.
+  - If it fails, see open question #50.
+- **Live Claude cloud progress:** this needs `cloudCallbackUrl` on a public endpoint (Tailscale Funnel for `/hooks/cloud` only) plus the repo hooks. See the README, "Claude cloud progress hooks".
 
 **Known limits:**
 - Wheel zoom with about 400+ nodes on screen is still slow.

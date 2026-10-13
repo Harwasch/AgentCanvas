@@ -186,6 +186,8 @@ tailscale serve --bg --https=443 http://127.0.0.1:8443
 
 A self-signed certificate also works (`tls: {cert, key, ca}`): the hub copies `ca` to the hosts, and `hub_channel.py` plus the Claude hooks trust it (`HUB_CA_FILE` and `NODE_EXTRA_CA_CERTS` in `~/.agent-hub/hub.env`).
 
+The hub will not serve plain HTTP on a non-loopback address unless `publicUrl` is https (TLS terminated in front of it). To do it anyway, for example on a trusted lab network, set `"allowInsecureHttp": true`. The hub token then crosses the network in clear text.
+
 ### 5. Run
 
 ```bash
@@ -195,7 +197,9 @@ systemctl --user enable --now agent-hub   # ExecStart=/usr/bin/node %h/agent-hub
 loginctl enable-linger hub                 # keep it running without a login session
 ```
 
-Open `https://<publicUrl>/login?token=<hubToken>`. The token is in `~/.agent-hub/secrets.json` (generated on first start, along with the hook tokens and the VAPID push keys). Then install the PWA from the browser menu and turn on notifications.
+Open `https://<publicUrl>/` and paste the hub token, or use the one-time link `https://<publicUrl>/login?token=<hubToken>`. The token is in `~/.agent-hub/secrets.json` (generated on first start, along with the hook secret and the VAPID push keys). Then install the PWA from the browser menu and turn on notifications.
+
+Each host's `~/.agent-hub/hub.env` holds a token derived for that host only, and every Claude session the hub starts gets its own secret on top. The hub rewrites `hub.env` on every host when it starts. After upgrading from a build that used one shared host token, restart Claude sessions that were already running, so their hub tool calls carry a session secret.
 
 ### Claude cloud progress hooks (optional)
 

@@ -1,7 +1,13 @@
 # Hub HTTP + event API (PWA ↔ hub)
 
-Auth: cookie `hub_token` (set by `GET /login?token=…`, HttpOnly, Secure, SameSite=Strict) or `Authorization: Bearer <hub token>`.
-Hook intake and MCP tool calls from hosts use separate tokens (see README).
+Auth: cookie `hub_token` (HttpOnly, Secure, SameSite=Strict) or `Authorization: Bearer <hub token>`.
+- `POST /login` `{ token }` (`application/json` → `200 {ok}`; `application/x-www-form-urlencoded` → `303 /`) sets the cookie. The PWA uses this.
+  `GET /login?token=…` (→ `302 /`) remains for the first-run link only.
+- Cookie-authenticated requests (and the `/api/events` / terminal WebSocket upgrades) are refused with **403** when `Origin` is present and is not the hub
+  (`publicUrl`, or the listen address on the hub's port), or when `Sec-Fetch-Site` is present and not `same-origin`/`none`. Bearer requests skip this check.
+- POST bodies must be `Content-Type: application/json` (an empty body is fine); anything else gets **415**.
+
+Hook intake and MCP tool calls from hosts use separate, per-host tokens (see "Hosts → hub").
 
 ## Snapshot + event stream
 - `GET /api/state` → `{ seq, hosts[], accounts[], checkouts[], sessions[], approvals[] (pending only), nodes[] (app nodes), layout: {[nodeId]: {x,y,w,h,collapsed}}, config: { publicUrl, vapidPublicKey } }`
@@ -52,20 +58,29 @@ Audit    { id, ts, app_node_id, tool, tier, caller, args, allowed, reason, resul
 - `POST /api/apps/publish` `{ hostId, dir, sessionId? }` → AppNode (repo-scan "unpublished app" path)
 - `POST /api/apps/:id/call` `{ tool, arguments, confirmed }` → MCP `CallToolResult`, or `409 {code, reason}` when policy refuses (`undeclared|preview|not_granted|needs_confirm|rate_limited`)
 - `POST /api/apps/:id/resource` `{ uri }` → MCP `resources/read` result
-- `GET  /api/apps/:id/review` → `{ version, candidateCommit, dirtyFiles: string[], tools, lifecycle, serverFiles: {path, content}[], reviewHash }`
-- `POST /api/apps/:id/promote` `{ commit: candidateCommit, grantActuate: boolean, commitDirty?: boolean, reviewHash }` → AppNode. When `dirtyFiles` is non-empty the hub refuses unless `commitDirty:true` ("Commit & pin"): it commits exactly the reviewed app files (refused if `reviewHash` no longer matches) and pins that commit.
+- `GET  /api/apps/:id/review` → `{ version, candidateCommit, appTree, dirtyFiles: string[], changes: {status: "A"|"M"|"D", path}[], files: string[], tools, lifecycle, serverFiles: {path, content, size, truncated, changed}[], reviewHash }`.
+  `changes`/`dirtyFiles` list every path under the app directory that Commit & pin would commit, recursively, including untracked files. `files` is the full file list of the reviewed tree.
+  `serverFiles` previews up to 60 files, changed first, each cut at 100 KB. `reviewHash` = hash of `candidateCommit` + the id of the exact tree to commit.
+- `POST /api/apps/:id/promote` `{ commit: candidateCommit, grantActuate: boolean, commitDirty?: boolean, reviewHash }` → AppNode. When `dirtyFiles` is non-empty, the hub refuses unless `commitDirty:true` ("Commit & pin").
+  The hub rebuilds the tree, refuses if it differs from the reviewed one ("changed since you reviewed"), commits that exact tree on top of `candidateCommit`, and pins the commit.
+- `POST /api/apps/:id/message` `{ text }` → `{ ok }`. An app view's `ui/message`, sent after the user confirms in the PWA. Only for promoted apps (409 for previews). The hub prefixes the text with `[message from app "<title>" (<id>) …]`.
 - `POST /api/apps/:id/reload`
 - `DELETE /api/apps/:id`
-- `GET  /api/apps/:id/ui?v=<version>` → the app HTML with a deny-by-default CSP header (iframe `src`; iframe is `sandbox="allow-scripts allow-forms"`, never `allow-same-origin`)
+- `GET  /api/apps/:id/ui?v=<version>` → the app HTML with a deny-by-default CSP header plus `sandbox allow-scripts allow-forms` (iframe `src`; the iframe is also `sandbox="allow-scripts allow-forms"`, never `allow-same-origin`)
 - `GET  /api/apps/:id/thumbnail.png`
 - `GET  /api/audit?node=<id>` → Audit[]
 - `POST /api/layout` `{ nodeId, x, y, w?, h?, collapsed? }`
 - `GET  /api/push/vapid` → `{ publicKey }`; `POST /api/push/subscribe` `{ subscription }`; `POST /api/push/test`
 
 ## Hosts → hub (host token)
-- `POST /hooks/claude` — Claude Code HTTP hooks from hub-started sessions (`Authorization: Bearer <hook token>`)
+Each host has its own token (`HUB_TOKEN` = `HUB_HOOK_TOKEN` in its `~/.agent-hub/hub.env`, `HMAC(hookToken, "host:<hostId>")`). The hub derives the calling host from it.
+A hub-started Claude session also has `HUB_SESSION_TOKEN` (`HMAC(hookToken, "session:<hubId>")`) in its environment.
+- `POST /hooks/claude` — Claude Code HTTP hooks from hub-started sessions: `Authorization: Bearer $HUB_HOOK_TOKEN`, `X-Hub-Session-Token: $HUB_SESSION_TOKEN`.
+  **403** when the hook's session is on another host, or when the session was launched with a secret and the header does not match it.
 - `POST /hooks/cloud` — repo hooks from vendor-cloud sessions (`Authorization: Bearer <cloud hook token>`)
-- `POST /api/mcp/tools/:tool` — hub MCP tools (`publish_app`, `app_status`, `screenshot_app`, `unpublish_app`, `app_call`) from `hub_channel.py`
+- `POST /api/mcp/tools/:tool` — hub MCP tools (`publish_app`, `app_status`, `screenshot_app`, `unpublish_app`, `app_call`, …) from `hub_channel.py`.
+  Body: `{ arguments, context: { hubSessionId?, hubSessionToken?, hostId?, cwd, vendor } }`. **403** when `hostId` is not the token's host, when `hubSessionId` is unknown or on another host,
+  or when its secret does not match (sessions launched with one). Without `hubSessionId`, the caller is the newest Codex session on the token's host whose cwd contains `cwd`.
 
 ## PWA screenshot mode
 `/?shot=<appNodeId>` renders one app node alone at its manifest size (live iframe, no LOD) and sets `data-app-ready="1"` on it once the view sent `ui/notifications/initialized`. Playwright on the hub uses it for `screenshot_app` / `publish_app` thumbnails.

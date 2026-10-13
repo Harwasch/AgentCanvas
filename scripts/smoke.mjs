@@ -530,6 +530,29 @@ try {
     return cases.map(([n, r]) => `${n} → ${r.status}`).join(', ') + `; forged hook → ${hook.status}`;
   });
 
+  await check('cookie auth refuses cross-origin and non-JSON requests (CSRF)', async () => {
+    const cookie = (await ctx.cookies()).filter((x) => x.name === 'hub_token').map((x) => `${x.name}=${x.value}`).join('; ');
+    if (!cookie) throw new Error('no hub_token cookie in the browser');
+    const evil = await fetchish('POST', `${BASE}/api/push/test`, {}, { cookie, origin: 'https://evil.example' });
+    const sameSite = await fetchish('POST', `${BASE}/api/push/test`, {}, { cookie, origin: 'https://localhost:3000', 'sec-fetch-site': 'same-site' });
+    const plain = await new Promise((resolve, reject) => {
+      const rq = https.request(`${BASE}/api/push/test`, { method: 'POST', agent, headers: { cookie, 'content-type': 'text/plain' } }, (rs) => { rs.resume(); rs.on('end', () => resolve(rs.statusCode)); });
+      rq.on('error', reject);
+      rq.end('{}');
+    });
+    const own = await fetchish('POST', `${BASE}/api/push/test`, {}, { cookie, origin: new URL(BASE).origin, 'sec-fetch-site': 'same-origin' });
+    const wsEvil = await new Promise((resolve) => {
+      const rq = https.request(`${BASE}/api/events`, { agent, headers: { cookie, origin: 'https://evil.example', connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': crypto.randomBytes(16).toString('base64') } });
+      rq.on('response', (rs) => resolve(rs.statusCode));
+      rq.on('upgrade', () => resolve(101));
+      rq.on('error', (e) => resolve(String(e.message)));
+      rq.end();
+    });
+    if (evil.status !== 403 || sameSite.status !== 403 || plain !== 415 || own.status !== 200 || wsEvil !== 403)
+      throw new Error(`evil ${evil.status}, same-site ${sameSite.status}, text/plain ${plain}, same-origin ${own.status}, ws ${wsEvil}`);
+    return `cross-origin 403, same-site 403, text/plain 415, WS upgrade 403; same-origin 200`;
+  });
+
   await check('terminal node: real shell over SSH (tmux), typed command echoes', async () => {
     await focus('mini-2');
     await page.locator('[data-testid="machine-node"][data-host-id="mini-2"] [data-testid="terminal-open"]').first().click();

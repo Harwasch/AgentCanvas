@@ -1,6 +1,7 @@
 // Canvas graph + auto layout. Every node has at most one parent; roots are projects (or bare
 // checkouts with no project), the "Compute surfaces" cluster, and free canvas nodes.
 //   Columns: one vertical tree per root, side by side.
+//   Tree:    one horizontal tree per root (depth runs left → right), roots stacked top to bottom.
 //   Cluster: one radial cluster per root, wrapped into rows.
 import type { HubData } from '../store';
 import type { AppNode, Branch, CNode as HubCNode, Checkout, LayoutEntry } from '../types';
@@ -29,10 +30,14 @@ export const refNodeId = (id: string) => `ref:${id}`;
 export const CLUSTER_ID = 'cluster';
 export const machineKey = (id: string) => (id === 'claude-cloud' ? 'cloud:claude' : id === 'codex-cloud' ? 'cloud:codex' : id);
 
+export type NodeSize = NonNullable<LayoutEntry['size']>;
+
 export type GraphInput = Pick<HubData,
   'hosts' | 'checkouts' | 'sessions' | 'nodes' | 'projects' | 'branches' | 'machines' | 'devices' | 'cnodes' | 'todos' | 'grants' | 'hilPlans'> & {
   expanded: Record<string, boolean>;
   phone: boolean;
+  /** User-resized node sizes (per collapsed / expanded state); ignored on phones. */
+  sizes?: Record<string, NodeSize | undefined>;
   attention: Record<string, boolean>;
 };
 
@@ -72,8 +77,13 @@ export function buildGraph(g: GraphInput): Graph {
   const edges: Edge[] = [];
   const byId: Record<string, GNode> = {};
   let order = 0;
-  const add = (n: Omit<GNode, 'order'>) => { const x = { ...n, order: order++ }; nodes.push(x); byId[x.id] = x; return x; };
   const ex = (id: string) => !!g.expanded[id] && !g.phone;
+  const add = (n: Omit<GNode, 'order'>) => {
+    const x = { ...n, order: order++ };
+    const s = g.phone ? null : g.sizes?.[x.id]?.[ex(x.id) ? 'x' : 'c'];
+    if (s && s[0] > 0 && s[1] > 0) { x.w = s[0]; x.h = s[1]; }
+    nodes.push(x); byId[x.id] = x; return x;
+  };
   const cidMaps: Record<string, Record<string, string>> = { m: {}, dev: {}, hil: {}, grant: {} };
   const cid = (prefix: 'm' | 'dev' | 'hil' | 'grant', raw: string) => (cidMaps[prefix][raw] ||= byId[raw] || Object.values(cidMaps).some((mm) => Object.values(mm).includes(raw)) ? `${prefix}:${raw}` : raw);
   const machineNodeId = (raw: string) => cidMaps.m[raw] || cid('m', raw);
@@ -108,23 +118,12 @@ export function buildGraph(g: GraphInput): Graph {
     const e = ex(b.id);
     add({ id: b.id, kind: 'branch', ref: b.id, w: e ? 560 : 380, h: e ? 560 : 206, compute: '', parent: null });
   });
+  // every branch hangs directly off its project (its base is shown on the node itself)
   branches.forEach((b) => {
     const n = byId[b.id];
     if (!n) return;
-    // nested under its base branch when that is another (non-default) branch node; guard cycles
-    let parent = b.projectId;
-    const baseId = b.base ? `${b.projectId}#${b.base}` : null;
-    if (baseId && baseId !== b.id && byId[baseId]?.kind === 'branch') {
-      let cur: string | null = baseId, hops = 0, cyc = false;
-      while (cur && hops++ < 50) {
-        if (cur === b.id) { cyc = true; break; }
-        const bb: Branch | undefined = g.branches[cur];
-        const nb: string | null = bb?.base ? `${bb.projectId}#${bb.base}` : null;
-        cur = nb && byId[nb]?.kind === 'branch' ? nb : null;
-      }
-      if (!cyc) parent = baseId;
-    }
-    n.parent = parent;
+    n.parent = b.projectId;
+    edges.push({ from: b.projectId, to: b.id, color: '#4A4E56' });
   });
 
   // sessions
@@ -294,6 +293,30 @@ function treeRoot(rootId: string, G: Graph): L {
   return norm(pos);
 }
 
+/** Horizontal tree: each depth is a column; parents centered beside their children. */
+function treeRootH(rootId: string, G: Graph): L {
+  const maxW: number[] = [];
+  const walk = (id: string, d: number) => { maxW[d] = Math.max(maxW[d] || 0, G.byId[id].w); (G.kids[id] || []).forEach((c) => walk(c, d + 1)); };
+  walk(rootId, 0);
+  const lane = [0];
+  for (let d = 1; d < maxW.length; d++) lane[d] = lane[d - 1] + maxW[d - 1] + 110;
+  const pos: Record<string, Box> = {};
+  const GAP = 44; // room for chips that sit above a node (file pins)
+  const place = (id: string, d: number, o: number): number => {
+    const n = G.byId[id];
+    const ks = G.kids[id] || [];
+    if (!ks.length) { pos[id] = { x: lane[d], y: o, w: n.w, h: n.h }; return o + n.h + GAP; }
+    let c = o;
+    ks.forEach((k) => { c = place(k, d + 1, c); });
+    const f = pos[ks[0]], l = pos[ks[ks.length - 1]];
+    const py = Math.max(o, (f.y + l.y + l.h) / 2 - n.h / 2);
+    pos[id] = { x: lane[d], y: py, w: n.w, h: n.h };
+    return Math.max(c, py + n.h + GAP);
+  };
+  place(rootId, 0, 0);
+  return norm(pos);
+}
+
 /** Dense radial cluster (ported from the design): rings sized to what their nodes need. */
 function clusterRoot(rootId: string, G: Graph): L {
   const sz = (id: string) => [G.byId[id].w, G.byId[id].h];
@@ -369,7 +392,9 @@ function freeGrid(ids: string[], G: Graph): L {
 
 export interface LayoutResult { pos: Record<string, Box>; headers: Header[] }
 
-export function autoLayout(mode: 'cluster' | 'columns', G: Graph): LayoutResult {
+export type AutoMode = 'cluster' | 'columns' | 'tree';
+
+export function autoLayout(mode: AutoMode, G: Graph): LayoutResult {
   const pos: Record<string, Box> = {};
   const headers: Header[] = [];
   const put = (l: L, ox: number, oy: number) => Object.keys(l.pos).forEach((k) => { const p = l.pos[k]; pos[k] = { x: p.x + ox, y: p.y + oy, w: p.w, h: p.h }; });
@@ -386,6 +411,16 @@ export function autoLayout(mode: 'cluster' | 'columns', G: Graph): LayoutResult 
       const l = freeGrid(free, G);
       put(l, x, 0);
       headers.push({ key: 'free', label: 'Free nodes', color: '#8A8F98', x, y: -46, w: l.W, sub: `${free.length}` });
+    }
+    return { pos, headers };
+  }
+  if (mode === 'tree') {
+    let y = 0;
+    treeRoots.forEach((r) => { const l = treeRootH(r, G); put(l, 0, y); y += l.H + 140; });
+    if (free.length) {
+      const l = freeGrid(free, G);
+      put(l, 0, y + 46);
+      headers.push({ key: 'free', label: 'Free nodes', color: '#8A8F98', x: 0, y, w: l.W, sub: `${free.length}` });
     }
     return { pos, headers };
   }
@@ -407,7 +442,7 @@ export function applySaved(pos: Record<string, Box>, G: Graph, saved: Record<str
   Object.keys(saved).forEach((id) => {
     const n = G.byId[id];
     const s = saved[id];
-    if (n && Number.isFinite(s.x) && Number.isFinite(s.y)) out[id] = { x: s.x, y: s.y, w: n.w, h: n.h };
+    if (n && s && Number.isFinite(s.x) && Number.isFinite(s.y)) out[id] = { x: s.x, y: s.y, w: n.w, h: n.h };
   });
   return out;
 }

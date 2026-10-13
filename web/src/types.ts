@@ -136,7 +136,8 @@ export interface Audit {
   result: any;
 }
 
-export interface LayoutEntry { x: number; y: number; w?: number; h?: number; collapsed?: boolean }
+/** size: user-resized [w, h] per state (c = collapsed, x = expanded); null clears it. */
+export interface LayoutEntry { x: number; y: number; w?: number; h?: number; collapsed?: boolean; size?: { c?: [number, number] | null; x?: [number, number] | null } }
 
 export interface StateSnapshot {
   seq: number;

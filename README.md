@@ -43,6 +43,22 @@ node scripts/build-demo.mjs        # → web/dist-demo/agent-hub-demo.html: one 
 
 The page runs the real PWA against the in-page mock hub (simulated hosts, agents, GitHub, devices and the winch app), so you can open it anywhere, including as a hosted page. Locally, `?mock=1` on a normal build does the same.
 
+## Canvas controls
+
+| Action | Mouse / trackpad | Touch |
+|---|---|---|
+| Select an area (multiple nodes) | Left-drag on empty canvas (Shift adds to the selection) | — |
+| Select / toggle a node | Click / Shift-click | Tap |
+| Pan | Right- or middle-drag, or two-finger scroll | One-finger drag |
+| Zoom | Scroll wheel, pinch | Pinch |
+| Move a node (or the whole selection) | Drag it | Drag it |
+| Move a node with all of its child nodes | Shift-drag it | — |
+| Resize a node | Drag its bottom-right corner (double-click the corner to reset) | — |
+| Add menu | Right-click (no drag) | — |
+| Clear the selection | Esc, or click empty canvas | Tap empty canvas |
+
+Layouts: **Cluster** (radial), **Columns** (top-down trees side by side), **Tree** (each group's tree runs left → right, groups stacked), **Custom** (your saved positions). Sizes you set apply in every layout; they are stored per node and per collapsed/expanded state.
+
 ## Install on a real Linux host (the always-on mini PC)
 
 The hub runs as an ordinary user. It needs no root and no API keys: every turn runs through the official `claude` and `codex` binaries, signed in with your subscriptions.

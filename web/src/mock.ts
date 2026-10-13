@@ -462,9 +462,12 @@ export async function handle(method: string, path: string, body?: any): Promise<
     return ok(clone(state.audit.filter((a) => !n || a.app_node_id === n)));
   }
   if (method === 'POST' && p === '/api/layout') {
-    const { nodeId, ...rest } = body;
-    state.layout[nodeId] = { ...(state.layout[nodeId] || {}), ...rest };
-    emit('layout.upsert', body);
+    const { nodeId, size, ...rest } = body;
+    const prev: any = state.layout[nodeId] || {};
+    const merged: any = { ...(prev.size || {}), ...(size || {}) };
+    Object.keys(merged).forEach((k) => { if (merged[k] == null) delete merged[k]; });
+    state.layout[nodeId] = { ...prev, ...rest, size: merged };
+    emit('layout.upsert', { nodeId, ...state.layout[nodeId] });
     return ok();
   }
   const v2 = handleV2(method, p, url, body, v2ctx);

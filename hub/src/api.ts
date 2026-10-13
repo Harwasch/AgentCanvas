@@ -32,7 +32,7 @@ export function routes(c: Ctx): Router {
     sessions: c.store.sessions(),
     approvals: c.store.pendingApprovals(),
     nodes: c.apps.nodes(),
-    layout: Object.fromEntries(c.db.all('SELECT * FROM layout').map((l) => [l.node_id, { x: l.x, y: l.y, w: l.w, h: l.h, collapsed: !!l.collapsed }])),
+    layout: Object.fromEntries(c.db.all('SELECT * FROM layout').map((l) => [l.node_id, layoutEntry(l)])),
     config: { publicUrl: c.cfg.publicUrl, vapidPublicKey: c.push.publicKey },
     projects: c.projects.projects(),
     branches: c.projects.branches(),
@@ -191,9 +191,15 @@ export function routes(c: Ctx): Router {
   // ------------------------------------------------------------- layout, push
   r.post('/api/layout', 'hub', (req) => {
     const b = req.body || {};
-    const row = { node_id: need(b.nodeId, 'nodeId'), x: Number(b.x) || 0, y: Number(b.y) || 0, w: b.w ?? null, h: b.h ?? null, collapsed: b.collapsed ? 1 : 0 };
+    const row: Record<string, unknown> = { node_id: need(b.nodeId, 'nodeId'), x: Number(b.x) || 0, y: Number(b.y) || 0, w: b.w ?? null, h: b.h ?? null, collapsed: b.collapsed ? 1 : 0 };
+    if (b.size !== undefined) {
+      // user-resized sizes merge per state (c = collapsed, x = expanded); null clears one
+      const prev = c.db.get('SELECT sz FROM layout WHERE node_id=?', row.node_id);
+      row.sz = JSON.stringify(mergeSize(prev?.sz ? JSON.parse(prev.sz) : {}, b.size));
+    }
     c.db.upsert('layout', row, 'node_id');
-    c.bus.publish('layout.upsert', { nodeId: row.node_id, x: row.x, y: row.y, w: row.w, h: row.h, collapsed: !!row.collapsed });
+    const saved = c.db.get('SELECT * FROM layout WHERE node_id=?', row.node_id)!;
+    c.bus.publish('layout.upsert', { nodeId: saved.node_id, ...layoutEntry(saved) });
     return { ok: true };
   });
   r.get('/api/push/vapid', 'hub', () => ({ publicKey: c.push.publicKey }));
@@ -344,4 +350,22 @@ export function routes(c: Ctx): Router {
 
   routesV2(c, r);
   return r;
+}
+
+type Size = [number, number];
+function mergeSize(prev: Record<string, Size>, patch: any): Record<string, Size> {
+  const out: Record<string, Size> = { ...prev };
+  if (!patch || typeof patch !== 'object') return out;
+  for (const k of ['c', 'x']) {
+    if (!(k in patch)) continue;
+    const v = patch[k];
+    if (v === null) delete out[k];
+    else if (Array.isArray(v) && v.length === 2 && v.every((n) => Number.isFinite(n) && n > 0 && n < 20000)) out[k] = [Math.round(v[0]), Math.round(v[1])];
+  }
+  return out;
+}
+
+function layoutEntry(l: Record<string, any>) {
+  const size = l.sz ? JSON.parse(l.sz) : undefined;
+  return { x: l.x, y: l.y, w: l.w, h: l.h, collapsed: !!l.collapsed, ...(size && Object.keys(size).length ? { size } : {}) };
 }

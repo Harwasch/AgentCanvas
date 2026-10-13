@@ -45,6 +45,16 @@ Screenshots: `docs/screenshots/` (desktop 1440×900, phone 390×844, repo panel,
 
 Screenshots: `docs/screenshots/v2-*.png`.
 
+## Canvas interaction (checked in the demo build with Playwright; the smoke test still passes 25/25)
+
+| Feature | Checked |
+|---|---|
+| Area select | A left-drag on empty canvas draws a box and selects the 16 nodes it touches. Dragging one of them moves all 16 by the same offset. Clicking empty canvas clears the selection. |
+| Pan | A right-drag pans the canvas and opens no menu. A right-click without a drag still opens the add menu. |
+| Subtree move | Shift-dragging the project moves its branch children by the same offset. A plain drag moves the project alone. |
+| Resize | Dragging the corner handle grows a branch node. The size persists per collapsed/expanded state. |
+| Tree layout | Each group's tree runs left → right, with curved links; groups are stacked. |
+
 ## What remains
 
 **Gating against the real CLIs** (in order, from the architecture doc): see `docs/OPEN-QUESTIONS.md`. The riskiest items:

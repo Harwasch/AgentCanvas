@@ -1,7 +1,7 @@
 // Thin client for the hub HTTP API (docs/API.md). In mock mode every request is
 // routed to an in-page handler instead of fetch().
 import type {
-  AppNode, Audit, Branch, CNode, CallToolResult, Checkout, FileKind, FileSource, Grant, Message, Review, Session, StateSnapshot, Todo,
+  AppNode, Audit, Branch, CNode, CallToolResult, Checkout, FileKind, FileSource, Grant, LayoutEntry, Message, Review, Session, StateSnapshot, Todo,
 } from './types';
 
 export interface ApiResponse<T = any> { ok: boolean; status: number; data: T }
@@ -112,7 +112,7 @@ export const api = {
   reload: (id: string) => call('POST', `/api/apps/${enc(id)}/reload`, {}),
   removeApp: (id: string) => call('DELETE', `/api/apps/${enc(id)}`),
   audit: (node?: string) => call<Audit[]>('GET', `/api/audit${node ? `?node=${enc(node)}` : ''}`),
-  layout: (body: { nodeId: string; x: number; y: number; w?: number; h?: number; collapsed?: boolean }) => call('POST', '/api/layout', body),
+  layout: (body: { nodeId: string; x: number; y: number; w?: number; h?: number; collapsed?: boolean; size?: LayoutEntry['size'] }) => call('POST', '/api/layout', body),
   vapid: () => call<{ publicKey: string }>('GET', '/api/push/vapid'),
   pushSubscribe: (subscription: unknown) => call('POST', '/api/push/subscribe', { subscription }),
   pushTest: () => call('POST', '/api/push/test', {}),

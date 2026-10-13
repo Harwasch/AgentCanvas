@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS app_node (
   created_at INTEGER, updated_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS layout (
-  node_id TEXT PRIMARY KEY, x REAL, y REAL, w REAL, h REAL, collapsed INTEGER
+  node_id TEXT PRIMARY KEY, x REAL, y REAL, w REAL, h REAL, collapsed INTEGER, sz TEXT
 );
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, app_node_id TEXT, tool TEXT, tier TEXT,
@@ -83,6 +83,10 @@ export class Db {
     this.sql = new DatabaseSync(dataDir === ':memory:' ? ':memory:' : path.join(dataDir, 'hub.sqlite'));
     this.sql.exec('PRAGMA journal_mode=WAL;');
     this.sql.exec(SCHEMA);
+    // additive migrations for databases created by older builds
+    for (const m of ['ALTER TABLE layout ADD COLUMN sz TEXT']) {
+      try { this.sql.exec(m); } catch { /* column already there */ }
+    }
   }
   all(q: string, ...p: any[]): Row[] {
     return this.sql.prepare(q).all(...p) as Row[];

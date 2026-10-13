@@ -178,7 +178,7 @@ export function applyEvent(ev: HubEvent) {
 
 // ---------- UI store ----------
 export type Tab = 'canvas' | 'sessions' | 'repos' | 'audit';
-export type LayoutMode = 'cluster' | 'columns' | 'custom';
+export type LayoutMode = 'cluster' | 'columns' | 'tree' | 'custom';
 export interface ToastItem { id: number; text: string; level: 'info' | 'warn' | 'error' }
 export interface ConfirmReq { id: number; title: string; detail: string; tool: string; args: unknown; resolve: (ok: boolean) => void }
 
@@ -189,6 +189,8 @@ export interface UIState {
   filter: string | null; // host id | 'cloud:claude' | 'cloud:codex'
   expanded: Record<string, boolean>;
   focusId: string | null;
+  /** canvas multi-selection (marquee / click) */
+  selected: Record<string, true>;
   panTo: { id: string; n: number } | null;
   repoCheckout: string | null;
   toasts: ToastItem[];
@@ -212,7 +214,7 @@ export function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); 
 export const ui = createStore<UIState>({
   tab: 'canvas',
   layoutMode: (lsGet('hub.layoutMode') as LayoutMode) || 'columns',
-  search: '', filter: null, expanded: {}, focusId: null, panTo: null, repoCheckout: null,
+  search: '', filter: null, expanded: {}, focusId: null, selected: {}, panTo: null, repoCheckout: null,
   toasts: [], confirm: null, spawnOpen: false, spawnPreset: null, promoteId: null,
   quickOpen: null, branchModal: null, reviewId: null, repoSource: null, addMenu: null,
 });

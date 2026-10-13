@@ -1,143 +1,143 @@
 {
-  "at": "2026-10-13T01:50:21.216Z",
+  "at": "2026-10-13T16:53:55.760Z",
   "results": [
     {
       "name": "PWA loads over HTTPS (login, manifest, service worker)",
       "ok": true,
-      "ms": 253,
+      "ms": 319,
       "detail": "manifest \"Agent Hub\", SW /sw.js"
     },
     {
       "name": "hosts online and repos indexed",
       "ok": true,
-      "ms": 5,
+      "ms": 6,
       "detail": "mini-1:hexapod-robot@feat/winch-console, mini-2:wpt-charger@feat/coil-sweep"
     },
     {
       "name": "start Codex thread + Claude session on each host from the hub",
       "ok": true,
-      "ms": 5798,
-      "detail": "codex 01a132f2…/01a132f2…, claude session_013lNP, session_01489Z"
+      "ms": 6601,
+      "detail": "codex 01a1362d…/01a1362d…, claude session_017FW2, session_011C4x"
     },
     {
       "name": "chat from the canvas (Claude mini-1 and Codex mini-2)",
       "ok": true,
-      "ms": 2835,
+      "ms": 3529,
       "detail": "replies rendered in both nodes"
     },
     {
       "name": "approve one tool call (Codex command approval, mini-1)",
       "ok": true,
-      "ms": 1831,
+      "ms": 2031,
       "detail": "npm test approved in the hub → ran on the daemon"
     },
     {
       "name": "approve one tool call (Claude via channel permission relay, mini-2)",
       "ok": true,
-      "ms": 3311,
+      "ms": 3388,
       "detail": "Bash permission answered through claude/channel/permission"
     },
     {
       "name": "interrupt one turn (Claude mini-2 and Codex mini-1)",
       "ok": true,
-      "ms": 9326,
+      "ms": 9338,
       "detail": "Escape via tmux (Claude), turn/interrupt (Codex)"
     },
     {
       "name": "repo panel shows branch, HEAD and dirty state",
       "ok": true,
-      "ms": 266,
-      "detail": "feat/winch-console · @ dbf6e02 · Initial import of hexapod-robot · 38m ago · 1 dirty"
+      "ms": 293,
+      "detail": "feat/winch-console · @ dbf6e02 · Initial import of hexapod-robot · 15h ago · 1 dirty"
     },
     {
       "name": "spawn Claude cloud session + Codex cloud task; status on canvas",
       "ok": true,
-      "ms": 9156,
-      "detail": "https://claude.ai/code/session_01mhAgCVD2VD9oMcYJzL48xE (idle), task_e_ba73c334eb1… (ready, +2/-0 · 1 files)"
+      "ms": 10267,
+      "detail": "https://claude.ai/code/session_01uz017cpjLgECByNjPvEzuZ (idle), task_e_fa479906520… (ready, +2/-0 · 1 files)"
     },
     {
       "name": "winch console: publish_app from the agent, node renders beside its session, screenshot returned",
       "ok": true,
-      "ms": 4695,
+      "ms": 4106,
       "detail": "app-196f6b0b6b preview v1, \"node app-196f6b0b6b (winch-console v1) published · tier: read-only (preview)\""
     },
     {
       "name": "preview blocks actuate (set_speed and stop) and audits the refusal",
       "ok": true,
-      "ms": 1328,
+      "ms": 1570,
       "detail": "2 refusals audited"
     },
     {
       "name": "Promote (review → commit & pin → grant actuate), then confirm + audit",
       "ok": true,
-      "ms": 2250,
-      "detail": "pinned ff20ef95, set_speed allowed after confirm (actuate, confirmed), stop unconfirmed"
+      "ms": 2677,
+      "detail": "pinned 503a7c0f, set_speed allowed after confirm (actuate, confirmed), stop unconfirmed"
     },
     {
       "name": "project + branch nodes with GitHub PR and CI (gh)",
       "ok": true,
-      "ms": 917,
+      "ms": 956,
       "detail": "PR #18 draft (1 approved), CI pending 2/3"
     },
     {
       "name": "new branch from the canvas → worktree on mini-1, pushed, branch node appears",
       "ok": true,
-      "ms": 2736,
+      "ms": 3128,
       "detail": "mini-1:/home/hosta/code/hexapod-robot.worktrees/feat-smoke-branch · pushed"
     },
     {
       "name": "any file as a node: quick open → image and markdown nodes render",
       "ok": true,
-      "ms": 2532,
+      "ms": 2742,
       "detail": "image @ dbf6e02b, doc from GitHub @ dbf6e02b"
     },
     {
       "name": "pinned file shows \"Newer version\" after a commit; Get latest re-pins",
       "ok": true,
-      "ms": 3269,
+      "ms": 9369,
       "detail": "dbf6e02b → newer commit detected → re-pinned"
     },
     {
       "name": "note and to-do list nodes (create, edit, toggle, dispatch to an agent)",
       "ok": true,
-      "ms": 2634,
-      "detail": "note saved, to-do toggled, dispatched to cx-9713bf8fb990"
+      "ms": 2892,
+      "detail": "note saved, to-do toggled, dispatched to cx-208049c7429b"
     },
     {
       "name": "agent-created review, suggestion and to-do; review decision goes back to the agent; suggestion launches",
       "ok": true,
-      "ms": 4361,
-      "detail": "review → changes requested (with comment) delivered; suggestion → cc-d65b63440fe6"
+      "ms": 3956,
+      "detail": "review → changes requested (with comment) delivered; suggestion → cc-3e649c8a8e79"
     },
     {
       "name": "compute cluster: machines with live metrics, devices with locks",
       "ok": true,
-      "ms": 934,
-      "detail": "mini-2 cpu 56.6% · NVIDIA RTX A5000 (simulated) 7920/24564 MB; PCAN lock assigned + released"
+      "ms": 1071,
+      "detail": "mini-2 cpu 70.2% · NVIDIA RTX A5000 (simulated) 6920/24564 MB; PCAN lock assigned + released"
     },
     {
       "name": "HIL run: locks the plan devices, streams rows, 11 pass / 1 fail, re-run failed",
       "ok": true,
-      "ms": 6524,
+      "ms": 6574,
       "detail": "11/12 pass (T-07 overshoot); re-run of T-07 → failed"
     },
     {
       "name": "compute grant: agent requests, you approve on the grant node, agent runs on the host",
       "ok": true,
-      "ms": 833,
-      "detail": "grant grant-70bfc819 approved; run_on_host → hostb"
+      "ms": 858,
+      "detail": "grant grant-14c97aa8 approved; run_on_host → hostb"
     },
     {
       "name": "terminal node: real shell over SSH (tmux), typed command echoes",
       "ok": true,
-      "ms": 3562,
+      "ms": 3698,
       "detail": "smoke-42 hostb"
     },
     {
       "name": "scan pushed branches: Claude cloud result branch + app found on it",
       "ok": true,
-      "ms": 13273,
-      "detail": "claude/build-a-status-dashboard-app-f → apps apps/cloud-status, linked to ccc-ca7e0b7c4097"
+      "ms": 13455,
+      "detail": "claude/build-a-status-dashboard-app-f → apps apps/cloud-status, linked to ccc-69b29c9dfbbf"
     },
     {
       "name": "web push sent for approvals (VAPID, aes128gcm)",
@@ -148,7 +148,7 @@
     {
       "name": "phone layout 390×844",
       "ok": true,
-      "ms": 2000,
+      "ms": 2009,
       "detail": "no horizontal scroll"
     }
   ],

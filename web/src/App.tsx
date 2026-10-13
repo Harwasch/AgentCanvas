@@ -127,7 +127,7 @@ function SessionSheet() {
   return null;
 }
 
-const LAYOUTS: [LayoutMode, string][] = [['cluster', 'Cluster'], ['columns', 'Columns'], ['custom', 'Custom']];
+const LAYOUTS: [LayoutMode, string][] = [['cluster', 'Cluster'], ['columns', 'Columns'], ['tree', 'Tree'], ['custom', 'Custom']];
 
 function LayoutSeg() {
   const mode = useUI((u) => u.layoutMode);

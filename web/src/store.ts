@@ -193,7 +193,7 @@ export function applyEvent(ev: HubEvent) {
 export type Tab = 'canvas' | 'sessions' | 'repos' | 'audit';
 export type LayoutMode = 'cluster' | 'columns' | 'tree' | 'custom';
 export interface ToastItem { id: number; text: string; level: 'info' | 'warn' | 'error' }
-export interface ConfirmReq { id: number; title: string; detail: string; tool: string; args: unknown; resolve: (ok: boolean) => void }
+export interface ConfirmReq { id: number; title: string; detail: string; tool: string; args: unknown; action?: string; resolve: (ok: boolean) => void }
 
 export interface UIState {
   tab: Tab;
@@ -276,11 +276,11 @@ export function toast(text: string, level: ToastItem['level'] = 'info') {
 }
 
 let confirmN = 0;
-export function requestConfirm(title: string, detail: string, tool: string, args: unknown): Promise<boolean> {
+export function requestConfirm(title: string, detail: string, tool: string, args: unknown, action?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const prev = ui.get().confirm;
     if (prev) prev.resolve(false);
-    ui.set({ confirm: { id: ++confirmN, title, detail, tool, args, resolve } });
+    ui.set({ confirm: { id: ++confirmN, title, detail, tool, args, action, resolve } });
   });
 }
 

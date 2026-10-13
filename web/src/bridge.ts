@@ -137,10 +137,14 @@ export class AppBridge {
         return {};
       }
       case 'ui/message': {
+        // an app writing into its agent's session is prompt injection unless you see and allow it: promoted apps only, every time
         const content = Array.isArray(params?.content) ? params.content : params?.content ? [params.content] : [];
         const text = content.filter((c: any) => c && c.type === 'text' && typeof c.text === 'string').map((c: any) => c.text).join('\n').trim();
         if (!text || !node.sessionId) return { isError: true };
-        await api.send(node.sessionId, text);
+        if (node.state !== 'promoted') throw rpcError(-32000, 'preview apps cannot message the agent; promote the app first');
+        const ok = await requestConfirm(`${node.title} wants to message its agent`, 'The text below goes to the agent session, marked as coming from this app.', 'ui/message', { text }, 'Send to agent');
+        if (!ok) return { isError: true };
+        await api.appMessage(node.id, text);
         return {};
       }
       case 'ui/update-model-context':

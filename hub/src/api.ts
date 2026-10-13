@@ -174,12 +174,23 @@ export function routes(c: Ctx): Router {
     if (!u) throw new HttpError(404, 'no UI yet');
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
-      'content-security-policy': cspHeader(u.manifest.csp),
+      // CSP sandbox: even opened top-level, the app document gets an opaque origin, never the hub's
+      'content-security-policy': `${cspHeader(u.manifest.csp)}; sandbox allow-scripts allow-forms`,
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer',
       'x-frame-options': 'SAMEORIGIN',
     });
     res.end(u.html);
+  });
+  // ui/message from an app view: promoted apps only (the PWA asks you first), labelled as coming from the app
+  r.post('/api/apps/:id/message', 'hub', async (req) => {
+    const n = node(req.params.id);
+    if (n.state !== 'promoted') throw new HttpError(409, 'preview apps cannot message their agent; promote the app first');
+    const s = n.session_id ? c.store.session(n.session_id) : undefined;
+    if (!s) throw new HttpError(409, 'the app has no agent session');
+    const text = String(need(req.body?.text, 'text')).slice(0, 8000);
+    await sendToSession(c, s, `[message from app "${n.title}" (${n.id}), sent with the user's approval]\n${text}`);
+    return { ok: true };
   });
   r.get('/api/apps/:id/thumbnail.png', 'hub', (req, res) => {
     const png = c.apps.thumbnail(req.params.id);

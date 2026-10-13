@@ -110,6 +110,7 @@ export const api = {
   promote: (id: string, body: { commit: string; grantActuate: boolean; commitDirty?: boolean; reviewHash: string }) =>
     call<AppNode>('POST', `/api/apps/${enc(id)}/promote`, body),
   reload: (id: string) => call('POST', `/api/apps/${enc(id)}/reload`, {}),
+  appMessage: (id: string, text: string) => call('POST', `/api/apps/${enc(id)}/message`, { text }),
   login: (token: string) => request<{ ok: boolean }>('POST', '/login', { token }),
   removeApp: (id: string) => call('DELETE', `/api/apps/${enc(id)}`),
   audit: (node?: string) => call<Audit[]>('GET', `/api/audit${node ? `?node=${enc(node)}` : ''}`),

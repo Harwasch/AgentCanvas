@@ -1,5 +1,5 @@
 // Promote review modal, actuate confirm dialog, toasts, token prompt.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { toast, ui, useHub, useUI } from '../store';
 import type { Review } from '../types';
@@ -115,24 +115,41 @@ export function PromoteModal() {
   );
 }
 
+/** Gates actuate calls and app → agent messages. The app can open it while you type in the app, so Cancel has
+ *  the focus and Run stays disabled for a moment: a keystroke meant for the app can never confirm a hardware action. */
+const ARM_MS = 600;
 export function ConfirmDialog() {
   const c = useUI((u) => u.confirm);
+  const [armed, setArmed] = useState(false);
+  const downArmed = useRef(false);
+  useEffect(() => {
+    setArmed(false);
+    if (!c) return;
+    const t = setTimeout(() => setArmed(true), ARM_MS);
+    return () => clearTimeout(t);
+  }, [c?.id]);
   if (!c) return null;
   const done = (ok: boolean) => { ui.set({ confirm: null }); c.resolve(ok); };
   let args = '';
   try { args = JSON.stringify(c.args ?? {}, null, 2); } catch { args = String(c.args); }
   return (
-    <div className="modal-back" style={{ zIndex: 400 }} onPointerDown={() => done(false)}>
+    <div key={c.id} className="modal-back" style={{ zIndex: 400 }} onPointerDown={() => done(false)}>
       <div className="modal" role="alertdialog" aria-label="Confirm tool call" data-testid="confirm-dialog" style={{ width: 440, border: '1px solid #FFD23F' }} onPointerDown={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === 'Escape') done(false); }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ background: '#FFD23F', color: '#0B0C0E', fontWeight: 700, borderRadius: 999, padding: '2px 8px', fontSize: 11 }}>Confirm</span>
           <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{c.title}</span>
         </div>
         <span style={{ fontSize: 12, color: '#A3A7AF', lineHeight: 1.45 }}>{c.detail} Asked by the app, shown by the hub — the app cannot click this for you.</span>
-        <pre className="mono" style={{ margin: 0, background: '#0B0C0E', border: '1px solid #24272D', borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: '#E7E8EA', whiteSpace: 'pre-wrap' }}>{c.tool}({args})</pre>
+        <pre className="mono" style={{ margin: 0, background: '#0B0C0E', border: '1px solid #24272D', borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: '#E7E8EA', whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{c.tool}({args})</pre>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button className="b" style={{ height: 32 }} data-testid="confirm-no" onClick={() => done(false)}>Cancel</button>
-          <button className="b bp" style={{ height: 32 }} data-testid="confirm-yes" autoFocus onClick={() => done(true)}>Run {c.tool}</button>
+          <button className="b" style={{ height: 32 }} data-testid="confirm-no" autoFocus onClick={() => done(false)}>Cancel</button>
+          {/* a pointer press that began before the button armed (or a key repeat) does not count */}
+          <button className="b bp" style={{ height: 32 }} data-testid="confirm-yes" disabled={!armed} aria-disabled={!armed}
+            onPointerDown={() => { downArmed.current = armed; }}
+            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && (!armed || e.repeat)) e.preventDefault(); }}
+            onClick={(e) => { if (!armed || (e.detail > 0 && !downArmed.current)) return; done(true); }}>
+            {c.action || `Run ${c.tool}`}
+          </button>
         </div>
       </div>
     </div>

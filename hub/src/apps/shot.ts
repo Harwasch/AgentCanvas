@@ -5,6 +5,12 @@ import { log } from '../events.js';
 
 const L = log('shot');
 
+/** Screenshot sizes come from agents: keep them sane (200..2400 px). */
+export function clampDim(v: unknown, dflt: number): number {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n > 0 ? Math.min(2400, Math.max(200, n)) : dflt;
+}
+
 export interface Shot {
   png: Buffer;
   consoleErrors: string[];
@@ -15,18 +21,22 @@ export class Shooter {
   constructor(private cfg: HubConfig, private token: string) {}
 
   private get(): Promise<Browser> {
-    if (!this.browser)
-      this.browser = chromium.launch({ executablePath: this.cfg.screenshot.chromiumPath || undefined, args: ['--no-sandbox'] }).catch((e) => {
+    if (!this.browser) {
+      // Chromium's sandbox cannot start as root; keep it everywhere else (the page renders agent-written app UIs)
+      const root = process.getuid?.() === 0;
+      if (root) L('running as root: screenshot Chromium starts with --no-sandbox (run the hub as a normal user to keep the sandbox)');
+      this.browser = chromium.launch({ executablePath: this.cfg.screenshot.chromiumPath || undefined, args: root ? ['--no-sandbox'] : [] }).catch((e) => {
         this.browser = undefined;
         throw e;
       });
+    }
     return this.browser;
   }
 
   async shoot(nodeId: string, size?: { width: number; height: number }): Promise<Shot> {
     const b = await this.get();
     const url = new URL(this.cfg.publicUrl);
-    const ctx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: (size?.width ?? 640) + 40, height: (size?.height ?? 420) + 40 }, deviceScaleFactor: 1 });
+    const ctx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: clampDim(size?.width, 640) + 40, height: clampDim(size?.height, 420) + 40 }, deviceScaleFactor: 1 });
     await ctx.addCookies([{ name: 'hub_token', value: this.token, domain: url.hostname, path: '/', secure: url.protocol === 'https:', httpOnly: true, sameSite: 'Strict' }]);
     const page = await ctx.newPage();
     const consoleErrors: string[] = [];

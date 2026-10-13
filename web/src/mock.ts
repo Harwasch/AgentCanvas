@@ -428,7 +428,7 @@ export async function handle(method: string, path: string, body?: any): Promise<
     return ok(node);
   }
 
-  if ((m = p.match(/^\/api\/apps\/([^/]+)(?:\/(call|resource|review|promote|reload|ui|thumbnail\.png))?$/))) {
+  if ((m = p.match(/^\/api\/apps\/([^/]+)(?:\/(call|resource|review|promote|reload|message|ui|thumbnail\.png))?$/))) {
     const [, nid, act] = m;
     const node = state.nodes.find((n) => n.id === nid);
     if (!node) return err(404, { error: 'no such app' });
@@ -461,6 +461,10 @@ export async function handle(method: string, path: string, body?: any): Promise<
       }
       const n = upd(state.nodes, nid, { state: 'promoted', pinnedCommit: commit, grantedVersion: body.grantActuate ? node.version : null }, 'node.upsert');
       return ok(n);
+    }
+    if (act === 'message') {
+      if (node.state !== 'promoted') return err(409, { error: 'preview apps cannot message their agent; promote the app first' });
+      return ok();
     }
     if (act === 'reload') {
       upd(state.nodes, nid, { status: 'starting' }, 'node.upsert');

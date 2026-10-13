@@ -129,11 +129,12 @@ function upsertMsg(list: Message[] | undefined, m: Message): Message[] {
   return arr;
 }
 
-export function setMessages(sessionId: string, msgs: Message[]) {
+/** replace: drop what was cached (after a hub restart the cache may hold rows the hub no longer has) */
+export function setMessages(sessionId: string, msgs: Message[], replace = false) {
   hub.set((s) => {
     // merge: keep anything streamed in meanwhile
     let list = msgs.slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-    (s.messages[sessionId] || []).forEach((m) => { if (!list.find((x) => x.id === m.id)) list = upsertMsg(list, m); });
+    if (!replace) (s.messages[sessionId] || []).forEach((m) => { if (!list.find((x) => x.id === m.id)) list = upsertMsg(list, m); });
     return { messages: { ...s.messages, [sessionId]: list } };
   });
 }
@@ -298,16 +299,49 @@ export function setExpanded(id: string, on: boolean) {
 }
 
 // ---------- connection ----------
+// Messages are not in the snapshot, so every (re)connect refetches the transcripts on screen (watchMessages).
+// The hub says hello first (resync when it restarted or the replay ring no longer covers us) and sends a keepalive
+// every 25 s; a socket silent for longer than DEAD_MS is treated as dead. Coming back to the page reconnects at once.
 let ws: WebSocket | null = null;
 let backoff = 1000;
 let stopped = false;
+let paused = false;
+let live = false;
+let reconnectTimer: number | undefined;
+let lastFrame = 0;
+let boot: string | null = null;
+const DEAD_MS = 60_000;
+const STALE_ON_WAKE_MS = 35_000;
+
+/** transcripts on screen (expanded nodes, the phone sheet, the Ask panel), refcounted */
+const watched = new Map<string, number>();
+async function fetchMessages(id: string, replace = false) {
+  try { setMessages(id, await api.messages(id), replace); } catch { /* offline: refetched on reconnect */ }
+}
+/** Load a session's messages now and after every reconnect while the returned function has not been called. */
+export function watchMessages(id: string): () => void {
+  watched.set(id, (watched.get(id) || 0) + 1);
+  void fetchMessages(id);
+  return () => {
+    const n = (watched.get(id) || 1) - 1;
+    if (n <= 0) watched.delete(id); else watched.set(id, n);
+  };
+}
+function refetchWatched(replace: boolean) {
+  // transcripts nobody is looking at are dropped; opening one fetches it again
+  hub.set((s) => ({ messages: Object.fromEntries(Object.entries(s.messages).filter(([k]) => watched.has(k))) }));
+  watched.forEach((_, id) => { void fetchMessages(id, replace); });
+}
 
 export async function loadState(): Promise<boolean> {
   try {
     const r = await api.state();
     if (r.status === 401) { hub.set({ authRequired: true, ready: false }); return false; }
     if (!r.ok) { hub.set({ error: `Hub returned ${r.status}` }); return false; }
+    const restarted = boot !== null && !!r.data.boot && r.data.boot !== boot;
     applySnapshot(r.data);
+    boot = r.data.boot ?? null;
+    refetchWatched(restarted);
     return true;
   } catch (e) {
     hub.set({ error: (e as Error).message || 'Hub unreachable' });
@@ -315,38 +349,93 @@ export async function loadState(): Promise<boolean> {
   }
 }
 
+/** close the current socket without triggering its own reconnect */
+function drop() {
+  window.clearTimeout(reconnectTimer);
+  const old = ws;
+  ws = null;
+  if (old) {
+    old.onclose = null; old.onmessage = null; old.onerror = null; old.onopen = null;
+    try { old.close(); } catch { /* */ }
+  }
+  hub.set({ connected: false });
+}
+
+async function reconnect() {
+  if (stopped || paused) return;
+  const ok = await loadState();
+  if (stopped || paused) return;
+  if (ok) openSocket();
+  else if (!hub.get().authRequired) scheduleReconnect();
+}
+
 function scheduleReconnect() {
-  if (stopped) return;
+  if (stopped || paused) return;
   const wait = backoff;
   backoff = Math.min(backoff * 2, 30000);
-  setTimeout(async () => {
-    if (stopped) return;
-    const ok = await loadState();
-    if (ok || !hub.get().authRequired) openSocket();
-  }, wait);
+  window.clearTimeout(reconnectTimer);
+  reconnectTimer = window.setTimeout(() => { void reconnect(); }, wait);
+}
+
+/** reconnect right away (page visible again, network back): fresh backoff */
+function reconnectNow() {
+  if (stopped || paused) return;
+  backoff = 1000;
+  drop();
+  void reconnect();
 }
 
 function openSocket() {
-  if (stopped) return;
+  if (stopped || paused) return;
+  if (ws) drop();
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${proto}//${location.host}/api/events?since=${hub.get().seq}`;
-  try { ws = new WebSocket(url); } catch { scheduleReconnect(); return; }
-  ws.onopen = () => { backoff = 1000; hub.set({ connected: true, error: null }); };
-  ws.onmessage = (e) => {
+  const url = `${proto}//${location.host}/api/events?since=${hub.get().seq}${boot ? `&boot=${encodeURIComponent(boot)}` : ''}`;
+  let sock: WebSocket;
+  try { sock = new WebSocket(url); } catch { scheduleReconnect(); return; }
+  ws = sock;
+  lastFrame = Date.now();
+  sock.onopen = () => { backoff = 1000; lastFrame = Date.now(); hub.set({ connected: true, error: null }); };
+  sock.onmessage = (e) => {
+    lastFrame = Date.now();
     try {
       const frame = JSON.parse(typeof e.data === 'string' ? e.data : '');
+      if (frame?.type === 'keepalive') return;
+      if (frame?.type === 'hello') {
+        // another hub run, or events we can no longer replay: reload everything (the socket stays)
+        if (frame.data?.resync || (boot && frame.data?.boot && frame.data.boot !== boot)) void loadState();
+        return;
+      }
       if (Array.isArray(frame)) frame.forEach(applyEvent); else applyEvent(frame);
     } catch { /* ignore malformed frame */ }
   };
-  ws.onclose = () => { hub.set({ connected: false }); ws = null; scheduleReconnect(); };
-  ws.onerror = () => { try { ws?.close(); } catch { /* */ } };
+  sock.onclose = () => { if (ws !== sock) return; ws = null; hub.set({ connected: false }); scheduleReconnect(); };
+  sock.onerror = () => { try { sock.close(); } catch { /* */ } };
+}
+
+function wake() {
+  if (stopped || paused || !live || document.visibilityState === 'hidden') return;
+  const open = ws && ws.readyState === WebSocket.OPEN;
+  if (!open || Date.now() - lastFrame > STALE_ON_WAKE_MS) reconnectNow();
 }
 
 export async function startLive() {
   stopped = false;
-  const ok = await loadState();
-  if (ok) openSocket();
-  else if (!hub.get().authRequired) scheduleReconnect();
+  if (!live) {
+    live = true;
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
+    window.addEventListener('pageshow', wake);
+    // silence longer than two keepalives: the socket is dead even if the browser has not noticed
+    window.setInterval(() => {
+      if (!paused && ws && ws.readyState === WebSocket.OPEN && Date.now() - lastFrame > DEAD_MS) reconnectNow();
+    }, 10_000);
+    // test hook: hold the event socket closed (as if offline), then reconnect
+    (globalThis as unknown as { __hubConn?: unknown }).__hubConn = {
+      pause: () => { paused = true; drop(); },
+      resume: () => { paused = false; reconnectNow(); },
+    };
+  }
+  await reconnect();
 }
 
 export function startMock(subscribe: (fn: (ev: HubEvent) => void) => void, snapshot: StateSnapshot) {

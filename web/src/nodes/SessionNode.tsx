@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { setExpanded, setMessages, toast, useHub } from '../store';
+import { setExpanded, toast, useHub, watchMessages } from '../store';
 import type { Approval, Message, Session } from '../types';
 import { openTerminal } from './MachineNode';
 import { Icon, ProviderBadge, StatusPill, computeColor, computeKey, computeName, duration, timeAgo } from '../ui';
@@ -19,8 +19,21 @@ const withCur = (list: string[], cur: string | null) => (cur && !list.includes(c
 
 export const nativeLabel = (s: Session) => (s.vendor === 'claude' ? 'Open in claude.ai' : 'Open in ChatGPT');
 
+/** seconds until a confirm-tier approval expires (the waiting tool call gives up then), ticking */
+function useExpiresIn(expiresAt: unknown): number | null {
+  const at = typeof expiresAt === 'number' ? expiresAt : null;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!at) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [at]);
+  return at ? Math.max(0, Math.round((at - now) / 1000)) : null;
+}
+
 export function ApprovalCard({ a, vendor }: { a: Approval; vendor: string }) {
   const [busy, setBusy] = useState(false);
+  const left = useExpiresIn(a.data && typeof a.data === 'object' ? a.data.expiresAt : null);
   const decide = async (d: 'allow' | 'deny' | 'allowSession') => {
     setBusy(true);
     try { await api.decide(a.id, d); } catch (e) { toast(`Decision failed: ${(e as Error).message}`, 'error'); setBusy(false); }
@@ -31,6 +44,7 @@ export function ApprovalCard({ a, vendor }: { a: Approval; vendor: string }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ background: '#FFD23F', color: '#0B0C0E', fontWeight: 700, borderRadius: 999, padding: '2px 8px', fontSize: 11 }}>Needs approval</span>
         <span style={{ fontSize: 11.5, color: '#8A8F98' }}>{a.source} · {timeAgo(a.created_at)}</span>
+        {left !== null ? <span data-testid="approval-expires" style={{ fontSize: 11.5, color: left <= 30 ? '#FFB3B6' : '#8A8F98', marginLeft: 'auto' }}>{left > 0 ? `expires in ${left >= 60 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : `${left}s`}` : 'expired'}</span> : null}
       </div>
       <span style={{ fontSize: 13, fontWeight: 500 }}>{a.title}</span>
       {a.detail ? <div className="mono prose" style={{ background: '#0B0C0E', border: '1px solid #24272D', borderRadius: 8, padding: '7px 10px', fontSize: 11.5, color: '#E7E8EA' }}>{a.detail}</div> : null}
@@ -91,12 +105,8 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
 
   const approvals = useMemo(() => Object.values(approvalsMap).filter((a) => a.session_id === id && a.status === 'pending'), [approvalsMap, id]);
 
-  useEffect(() => {
-    if (!big) return;
-    let alive = true;
-    api.messages(id).then((list) => { if (alive) setMessages(id, list); }).catch(() => { /* offline */ });
-    return () => { alive = false; };
-  }, [big, id]);
+  // loaded while open, and again after every reconnect (messages are not in the snapshot)
+  useEffect(() => (big ? watchMessages(id) : undefined), [big, id]);
 
   // stick to bottom when new messages arrive
   useEffect(() => {

@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { ApprovalCard, MessageItem } from '../nodes/SessionNode';
-import { lsSet, setMessages, toast, ui, useHub, useUI } from '../store';
+import { lsSet, toast, ui, useHub, useUI, watchMessages } from '../store';
 import type { Message, Session } from '../types';
 import { Icon, ProviderBadge, StatusPill, isActive, useIsPhone } from '../ui';
 
@@ -69,12 +69,7 @@ function Panel({ phone }: { phone: boolean }) {
   const approvals = useMemo(() => Object.values(approvalsMap).filter((a) => a.status === 'pending' && (a.source === 'canvas-action' || a.session_id === s?.id || a.session_id === 'mcp:external')), [approvalsMap, s?.id]);
   const mine = changes.filter((c) => !s || c.sessionId === s.id || !c.sessionId).slice(0, 4);
 
-  useEffect(() => {
-    if (!s) return;
-    let alive = true;
-    api.messages(s.id).then((l) => { if (alive) setMessages(s.id, l); }).catch(() => { /* offline */ });
-    return () => { alive = false; };
-  }, [s?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => (s ? watchMessages(s.id) : undefined), [s?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; }, [msgs, approvals.length, mine.length]);
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50); }, []);
 

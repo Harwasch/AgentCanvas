@@ -142,6 +142,8 @@ export interface LayoutEntry { x: number; y: number; w?: number; h?: number; col
 
 export interface StateSnapshot {
   seq: number;
+  /** changes on every hub start (the event seq restarts) */
+  boot?: string;
   hosts: Host[];
   accounts: Account[];
   checkouts: Checkout[];
@@ -174,6 +176,9 @@ export interface Project {
   stats: { files: number; commits: number; sizeMB: number; branches: number; sessions: number };
   folders: { name: string; mb: number }[];
   checkouts: string[];
+  /** last GitHub poll failed: branches, PRs and CI shown are from githubAt */
+  githubError?: string | null;
+  githubAt?: number | null;
   updatedAt: Ts;
 }
 

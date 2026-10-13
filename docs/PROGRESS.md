@@ -1,6 +1,6 @@
 # Progress: Agent Hub v1
 
-Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 34/34, about 2 minutes). Unit tests: 66/66. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
+Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 34/34, about 2 minutes). Unit tests: 78/78. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
 
 ## What works (verified by the smoke test, stubs on two SSH "hosts")
 
@@ -77,6 +77,16 @@ Screenshot: `docs/screenshots/ask-claude.png`.
 | Push | Pushes for the Codex and the channel approval are each delivered to the fake push service (matched by the hub's push log, not any push). |
 | Honesty | The run fails if fewer checks ran than are defined, or on any browser console error not allowlisted by the check that provokes it. |
 | Unit tests | Startup expiry of orphaned approvals; abort → expired; ssh failure keeps sessions while tmux "gone" ends them; scans touch the project only on change; GitHub errors keep branches/PR/CI; tree cache per sha; CI merges commit statuses; capped paging. |
+
+## Performance (measured; see DECISIONS "Performance" for method and numbers)
+
+| Area | Result |
+|---|---|
+| Streaming | A 2 MB command output plus a 200 KB reply: 1,506 MB → 0.6 MB published, peak RSS 1.9 GB → 106 MB. The wire carries `message.append` deltas; command output is kept as a 64 KB tail. |
+| Canvas drag | 0 node renders per pointer move (was 45 at 41 nodes, 750 at 441). Frame p95 at 4× CPU throttle is 16.7 ms at 41 nodes and 16.8 ms at 441 (was 33 and 483). |
+| Idle | With 2 running sessions the main thread does 24 ms/s of work (was 127). A live STL node adds nothing while idle (was about 650 ms/s). Idle canvases send no view reports and do no graph rebuilds (were 7 per 15 s and 6 per 10 s). |
+| Hub | Prepared statements are cached. Grants publish only on change. Retention covers messages, audit and approvals. Old ended sessions leave `/api/state`. Short ssh execs run 4 at a time per host. |
+| Unit tests | Delta coalescing and order, append offsets, flush on read, unchanged upserts skipped, output tail and `reset`, `clipTail` composition, ring byte bound → resync, statement cache, retention pruning and the state filter, limiter queueing, view-report ranking, grant publish on change, transcript tail resume. |
 
 ## What remains
 

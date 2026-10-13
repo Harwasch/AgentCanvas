@@ -121,6 +121,11 @@ Each host needs only the vendor CLIs, `tmux`, `git` and `python3`. Nothing of ou
    ```
    Subscription logins only. Do not set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; the hub has no API-key code path, and Remote Control and channels require claude.ai auth.
 4. Optional: in each Claude profile, set `"remoteControlAtStartup": true` in `settings.json`. The hub passes `--remote-control` anyway. It answers the one-time Remote Control prompt and the dev-channel warning through tmux on the first launch per host and profile. Disable that with `"autoAnswerStartupPrompts": false`.
+5. **Raise sshd's `MaxSessions`.** The hub keeps one multiplexed SSH connection per host, and sshd allows 10 sessions (channels) on a connection by default. Each local Claude session holds 2 of them for as long as it runs (transcript tail and channel relay), each Codex account 1 (the app-server proxy), each terminal and app server 1, and short commands (repo scans, metrics, git) take one each while they run; the hub runs at most `ssh.maxExecs` (default 4) short commands per host at a time and queues the rest. With more than about 3 Claude sessions on one host the default limit is reached, and new channels fail with `channel N: open failed: administratively prohibited`; the hub logs a `WARNING <host>: sshd refused a new channel` line when it sees that. Set, in `/etc/ssh/sshd_config` on each host:
+   ```
+   MaxSessions 64
+   ```
+   then `sudo systemctl reload ssh` (or `sshd`). Tailscale SSH has no such limit.
 
 ### 3. Configure the hub
 
@@ -130,6 +135,8 @@ Copy `config/hub.config.example.json` to `config/hub.config.json` and edit it:
 - `accounts[]`: one per profile. Each has `claude.configDir` and `codex.home` (paths on the hosts), `git` identity, `gh.hostAlias`, and `hub.{claudeConfigDir,codexHome,scratchDir}` (paths on the hub for the cloud CLIs; log those in too, as in step 2.3, but on the hub).
 - `accounts[].cloud.codexEnvironments`: the env ids or labels you use with `codex cloud exec --env` (take them from the `codex cloud` picker). `cloud.claudeEnvironments` lists the names shown in the spawn dialog; `claude --cloud` uses the account's default environment.
 - `adapters`: the CLI binaries (see "Switching from stubs to real CLIs").
+- `ssh.maxExecs` (default 4): short SSH commands run at once per host; the rest wait their turn. Long-lived channels (relays, tails, terminals, an agent's `run_on_host`) are not counted. See `MaxSessions` above.
+- `retention` (days; pruned every `intervalMin`, default 60): `messagesDays` (30) keeps the messages of sessions that ended, `auditDays` (90) the audit log, `approvalsDays` (7) decided and expired approvals; sessions that ended more than `stateEndedDays` (7) ago leave the canvas and `/api/state` but stay listed in the Sessions tab ("Show older ended sessions").
 
 **Adding a host or an account** is the same edit: add the entry, then restart the hub (`systemctl --user restart agent-hub`). Hosts appear within 30 s, and their checkouts on the next repo scan. Check SSH first with `ssh -i ~/.agent-hub/ssh/id_ed25519 user@host true`.
 

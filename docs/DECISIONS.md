@@ -113,3 +113,45 @@ Precedence: the build prompt > `architecture.md` (behavior) > `AgentCanvas.html`
 - **CI:** CI state merges check runs with the combined commit status (`commits/{sha}/status`); `failure`/`error` count as failed.
 - **Repo scans:** a scan triggers a project refresh only when the checkout's head, branch, upstream, dirty count or ahead/behind changed. GitHub otherwise refreshes on `githubPollIntervalSec`.
 - **Canvas drags:** dragging a node in an auto layout switches to Custom over that layout, as Claude's moves do, so the position persists. Drag and resize state is read from refs and always cleared when the gesture ends.
+
+## Performance
+- **Streamed text is sent as deltas:** the first delta of a message is a `message.upsert`; later ones are coalesced per message (100 ms) into `message.append {id, session_id, seq, kind, append, at}`. The hub keeps the streaming text in memory, writes it at most every 500 ms and on completion, and flushes before any read. `at` makes appends idempotent; a gap or an unknown message makes the PWA refetch that transcript.
+- **Command output tail:** only the last 64 KB of a command's output is kept, in SQLite and on the wire, behind `…truncated…`; `data.outputLen` counts everything received. More than 64 KB in one window is sent as `reset: true` with the kept tail.
+- **Unchanged messages:** an upsert that changes nothing (a replayed transcript line, a resumed Codex thread) is not written or published.
+- **Replay ring:** at most 2,000 events and 8 MB; each event is serialized once on publish and those bytes are sent to every client and replay. A `since` older than the ring gets `hello {resync: true}`.
+- **Claude transcript tail:** the number of transcript lines read is kept in session meta (`tLines`, saved quietly every 2 s), and a reattach runs `tail -n +<tLines+1> -F`, so it does not replay the whole file.
+- **Canvas node wrappers:** each node is a memoized wrapper with primitive props (box, opacity, expanded, phone). It reads its own selection, glow and session ring from the stores; checkout nodes read their own rows. The canvas hands wrappers one stable callback object.
+- **Drag without React:** pointer moves never set React state. A drag moves the nodes with a running Web Animation whose keyframes are replaced on each move. A running transform animation is composited with assumed overlap, so a move neither repaints nor re-layerizes the page; an inline transform would, every frame. Edges touching the moved nodes are hidden and drawn as copies in an overlay that is held by its own animation and has fixed paint bounds. The result is committed once, on pointerup. Resize sets the box size directly. `.world` pointer-events, the cursor and the marquee are set through refs.
+- **Camera layers:** the dot grid is its own layer, moved by transform; its spacing is repainted only when the zoom band changes. During a pan, pinch or wheel burst, the world and the grid are held by running animations the same way, and they go back to inline transforms (re-rastered at the final zoom) 200 ms after the gesture.
+- **Graph rebuilds:** the graph is rebuilt from a structural key (ids, parents, kinds and the fields that change node sizes: status waiting/active, expanded, readme, app size…), cached per store collection. A grant usage tick, a machine metric or a session's `last_event` does not rebuild the graph and layout.
+- **Running ring:** a static conic gradient on an oversized child rotated by a CSS transform animation (compositor only), clipped to the band by its parent's mask. The ring and halo animations are removed (not paused: a running animation keeps a compositor layer) when the node is off-screen (IntersectionObserver) or the zoom is below `LIVE_ZOOM`; spinners stop below `LIVE_ZOOM` too.
+- **STL viewer:** renders on demand: on OrbitControls `change` (also while damping settles), on resize, wireframe and reset. It no longer renders 60 frames a second while idle.
+- **View reports:** sent 0.7 s after any change (camera included), skipped when the payload equals the last one sent, not sent while the page is hidden, and sent once with `pageVisible: false` on hiding (keepalive) and again when the page is shown or gains or loses focus. The hub's tools use the visible page's report, then the focused one, then the newest.
+- **SQLite statements:** prepared once per SQL text and reused (LRU of 256).
+- **Grant events:** a metrics tick republishes a grant only when its `usedGB` changed.
+- **Retention:** pruned hourly. Messages of sessions ended more than 30 days ago, audit rows older than 90 days, and decided or expired approvals older than 7 days are deleted (`retention.*`). Sessions ended more than 7 days ago leave `/api/state` and the canvas; `GET /api/sessions/archive` lists them for the Sessions tab.
+- **SSH channels:** one ControlMaster per host shares sshd's `MaxSessions` (default 10). Short execs go through a per-host limiter (`ssh.maxExecs`, default 4; the rest queue in order). An agent's `run_on_host` bypasses the limiter so it cannot starve health checks. Long-lived channels (relay, tail, proxy, terminals) are not limited. The README recommends `MaxSessions 64`, and the hub logs a warning when sshd refuses a channel. Merging each Claude session's tail and relay into one channel would need a multiplexing helper on the host, so it was not done; the cost is documented.
+- **Bundle:** the mock hub is imported only when `import.meta.env.DEV` or `VITE_DEMO=1`, so a production build contains no mock chunk; `?mock=1` still works in `vite dev` and the demo build. The service worker drops cached `/assets/` files that the current `index.html` (and the chunks it imports) no longer reference, whenever a new `index.html` arrives. `sw.js` itself does not change between builds. The demo page has a viewport meta and a charset.
+
+### Measurements (before → after)
+Hub bench: the Codex driver → store → bus path in-process (file-backed SQLite). It streams a 2 MB command output (1,024 × 2 KB deltas) and a 200 KB agent message (5,000 × 40 B deltas), with arrival spread over time. PWA: the demo build in headless Chromium at 1440×900, with `playwright-core`. React commits were counted through the devtools hook and `NodeView` renders by a temporary counter. Frame times are rAF intervals during 60 pointer moves at 4× CPU throttle (CDP `Emulation.setCPUThrottlingRate`). Idle CPU is the CDP `Performance.getMetrics` `TaskDuration` delta over 10 s. "441 nodes" is the demo plus 400 injected notes. The demo itself always has timers running: a 100 ms winch simulation and machine and HIL ticks.
+
+| What | Before | After |
+|---|---|---|
+| Stream bench: events / bytes published | 6,027 / 1,506 MB | 15 / 0.6 MB |
+| Stream bench: replay ring / peak RSS / wall time | 247 MB / 1,922 MB / 33.8 s | 0.63 MB / 106 MB / 1.9 s |
+| Stream bench: command output stored | 2,049 KB | 64 KB (+ marker) |
+| Node drag, 41 nodes: React commits / NodeView renders per move | 1.17 / 45.1 | 0.08 / 0 (the commits come from demo timers) |
+| Node drag, 41 nodes: frame p50 / p95 / max | 16.7 / 33.4 / 66.7 ms | 16.7 / 16.7 / 16.8 ms |
+| Node drag, 441 nodes: commits / NodeView renders per move | 1.95 / 749.7 | 0.13 / 0 |
+| Node drag, 441 nodes: frame p50 / p95 / max | 33.4 / 483.4 / 550 ms | 16.7 / 16.8 / 450 ms |
+| Right-drag pan, 41 / 441 nodes: frame p50 / p95 | 50 / 67 ms; 500 / 633 ms | 16.7 / 16.8 ms; 16.7 / 383 ms |
+| Wheel zoom, 41 / 441 nodes: frame p50 / p95 | 16.7 / 50 ms; 33 / 567 ms | 16.7 / 16.8 ms; 33 / 483 ms |
+| Idle, 2 running sessions, fitted (z 0.13): main thread | 127 ms/s (60 style recalcs/s) | 24 ms/s (14/s) |
+| Idle, zoomed to a running session (z 1) | 112 ms/s (60 recalcs/s) | 30 ms/s (19/s) |
+| Idle, one live (expanded) STL node | 672 ms/s | 24 ms/s |
+| View POSTs per 15 s idle / after a pan | 7 / 0 (stale) | 0 / 1 |
+| Graph rebuilds per 10 s idle | 6 | 0 |
+| Production bundle: mock chunk | 67.6 KB emitted | not emitted |
+
+At 441 nodes, every repaint anywhere still costs one layerization of the whole canvas, about 100 ms unthrottled (Chromium's cost grows with the number of paint chunks). The remaining long frames come from demo ticks and, when zooming, from the zoom label. Drag and pan avoid it. Level-of-detail rendering or culling for far-out zoom would be the next step.

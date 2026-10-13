@@ -1,10 +1,10 @@
 {
-  "at": "2026-10-13T19:11:39.520Z",
+  "at": "2026-10-13T20:12:44.051Z",
   "results": [
     {
       "name": "PWA loads over HTTPS (login, manifest, service worker)",
       "ok": true,
-      "ms": 284,
+      "ms": 322,
       "detail": "manifest \"Agent Hub\", SW /sw.js"
     },
     {
@@ -16,182 +16,182 @@
     {
       "name": "start Codex thread + Claude session on each host from the hub",
       "ok": true,
-      "ms": 6096,
-      "detail": "codex 01a136ab…/01a136ab…, claude session_01QInN, session_01u3wa"
+      "ms": 5925,
+      "detail": "codex 01a136e3…/01a136e3…, claude session_01xazZ, session_01Kb6h"
     },
     {
       "name": "chat from the canvas (Claude mini-1 and Codex mini-2)",
       "ok": true,
-      "ms": 2883,
+      "ms": 2933,
       "detail": "replies rendered in both nodes"
     },
     {
       "name": "approve one tool call (Codex command approval, mini-1)",
       "ok": true,
-      "ms": 2338,
+      "ms": 2125,
       "detail": "npm test approved in the hub → ran on the daemon"
     },
     {
       "name": "approve one tool call (Claude via channel permission relay, mini-2)",
       "ok": true,
-      "ms": 2748,
+      "ms": 3320,
       "detail": "Bash permission answered through claude/channel/permission"
     },
     {
       "name": "interrupt one turn (Claude mini-2 and Codex mini-1)",
       "ok": true,
-      "ms": 8333,
+      "ms": 7816,
       "detail": "Escape via tmux (Claude), turn/interrupt (Codex)"
     },
     {
       "name": "repo panel shows branch, HEAD and dirty state",
       "ok": true,
-      "ms": 270,
-      "detail": "feat/winch-console · @ dbf6e02 · Initial import of hexapod-robot · 17h ago · 1 dirty"
+      "ms": 296,
+      "detail": "feat/winch-console · @ dbf6e02 · Initial import of hexapod-robot · 19h ago · 1 dirty"
     },
     {
       "name": "spawn Claude cloud session + Codex cloud task; status on canvas",
       "ok": true,
-      "ms": 9642,
-      "detail": "https://claude.ai/code/session_01rUpV07aVYknhdoNs8bdi8N (idle), task_e_c02629dec34… (ready, +2/-0 · 1 files)"
+      "ms": 9858,
+      "detail": "https://claude.ai/code/session_011pOHUNXQJyFCtZ8VipAqFw (idle), task_e_d2311cec893… (ready, +2/-0 · 1 files)"
     },
     {
       "name": "winch console: publish_app from the agent, node renders beside its session, screenshot returned",
       "ok": true,
-      "ms": 5026,
+      "ms": 4080,
       "detail": "app-196f6b0b6b preview v1, \"node app-196f6b0b6b (winch-console v1) published · tier: read-only (preview)\""
     },
     {
       "name": "preview blocks actuate (set_speed and stop) and audits the refusal",
       "ok": true,
-      "ms": 1380,
+      "ms": 1445,
       "detail": "2 refusals audited"
     },
     {
       "name": "Promote (review → commit & pin → grant actuate), then confirm + audit",
       "ok": true,
-      "ms": 3402,
-      "detail": "pinned 99c0d944, set_speed allowed after confirm (actuate, confirmed), stop unconfirmed"
+      "ms": 3140,
+      "detail": "pinned 9d7d5fb5, set_speed allowed after confirm (actuate, confirmed), stop unconfirmed"
     },
     {
       "name": "project + branch nodes with GitHub PR and CI (gh)",
       "ok": true,
-      "ms": 865,
+      "ms": 957,
       "detail": "PR #18 draft (1 approved), CI pending 3/4"
     },
     {
       "name": "new branch from the canvas → worktree on mini-1, pushed, branch node appears",
       "ok": true,
-      "ms": 2130,
+      "ms": 2502,
       "detail": "mini-1:/home/hosta/code/hexapod-robot.worktrees/feat-smoke-branch · pushed"
     },
     {
       "name": "any file as a node: quick open → image and markdown nodes render",
       "ok": true,
-      "ms": 2632,
+      "ms": 2782,
       "detail": "image @ dbf6e02b, doc from GitHub @ dbf6e02b"
     },
     {
       "name": "pinned file shows \"Newer version\" after a commit; Get latest re-pins",
       "ok": true,
-      "ms": 2218,
+      "ms": 2766,
       "detail": "dbf6e02b → newer commit detected → re-pinned"
     },
     {
       "name": "note and to-do list nodes (create, edit, toggle, dispatch to an agent)",
       "ok": true,
-      "ms": 2817,
-      "detail": "note saved, to-do toggled, dispatched to cx-624403ee52f9"
+      "ms": 2833,
+      "detail": "note saved, to-do toggled, dispatched to cx-520b0d0f0e4e"
     },
     {
       "name": "agent-created review, suggestion and to-do; review decision goes back to the agent; suggestion launches",
       "ok": true,
-      "ms": 3816,
-      "detail": "review → changes requested (with comment) delivered; suggestion → cc-2d2a37797633"
+      "ms": 3880,
+      "detail": "review → changes requested (with comment) delivered; suggestion → cc-1232d9a83fd5"
     },
     {
       "name": "compute cluster: machines with live metrics, devices with locks",
       "ok": true,
-      "ms": 984,
-      "detail": "mini-2 cpu 63.3% · NVIDIA RTX A5000 (simulated) 8080/24564 MB; PCAN lock assigned + released"
+      "ms": 970,
+      "detail": "mini-2 cpu 60.9% · NVIDIA RTX A5000 (simulated) 8240/24564 MB; PCAN lock assigned + released"
     },
     {
       "name": "HIL run: locks the plan devices, streams rows, 11 pass / 1 fail, re-run failed",
       "ok": true,
-      "ms": 6714,
+      "ms": 6552,
       "detail": "11/12 pass (T-07 overshoot); re-run of T-07 → failed"
     },
     {
       "name": "compute grant: agent requests, you approve on the grant node, agent runs on the host",
       "ok": true,
-      "ms": 876,
-      "detail": "grant grant-819887d3 approved; run_on_host → hostb"
+      "ms": 874,
+      "detail": "grant grant-4dc0fbed approved; run_on_host → hostb"
     },
     {
       "name": "hub tools: a session id needs its own secret and its own host (no impersonation)",
       "ok": true,
-      "ms": 47,
+      "ms": 45,
       "detail": "wrong session token → 403, no session token → 403, another host's token → 403, body claims another host → 403, the old shared hook secret → 401, own token + own secret → 200; forged hook → 403"
     },
     {
       "name": "cookie auth refuses cross-origin and non-JSON requests (CSRF)",
       "ok": true,
-      "ms": 24,
+      "ms": 30,
       "detail": "cross-origin 403, same-site 403, text/plain 415, WS upgrade 403; same-origin 200"
     },
     {
       "name": "terminal node: real shell over SSH (tmux), typed command echoes",
       "ok": true,
-      "ms": 3678,
+      "ms": 3612,
       "detail": "smoke-42 hostb"
     },
     {
       "name": "scan pushed branches: Claude cloud result branch + app found on it",
       "ok": true,
-      "ms": 12810,
-      "detail": "claude/build-a-status-dashboard-app-f → apps apps/cloud-status, linked to ccc-8602317fd8ca"
+      "ms": 12778,
+      "detail": "claude/build-a-status-dashboard-app-f → apps apps/cloud-status, linked to ccc-20ca4804867c"
     },
     {
       "name": "canvas MCP for Claude Code / Desktop: /mcp with its own token, stdio bridge, snapshot of what the PWA shows",
       "ok": true,
-      "ms": 344,
+      "ms": 289,
       "detail": "17 tools; snapshot 43 nodes (columns); stdio bridge lists 17"
     },
     {
       "name": "Ask Claude: assistant on mini-1 arranges the selected nodes live (glow + Undo pill), adds a note; Undo reverts",
       "ok": true,
-      "ms": 3538,
-      "detail": "cc-5f973c698659 on mini-1: 3 nodes → column (4 glowing) + note; undo restored both"
+      "ms": 3599,
+      "detail": "cc-73aa94ec9fde on mini-1: 3 nodes → column (4 glowing) + note; undo restored both"
     },
     {
       "name": "Ask Claude confirm tier: starting a session waits for Allow in the panel, then runs",
       "ok": true,
-      "ms": 3826,
-      "detail": "approval ca-dad6dc616133 → cx-6f9894df82fe on mini-2"
+      "ms": 3731,
+      "detail": "approval ca-e5f081ea5076 → cx-f6d5c89dc1c4 on mini-2"
     },
     {
       "name": "confirm-tier approval expires when the waiting caller disconnects (and a late Allow does nothing)",
       "ok": true,
-      "ms": 73,
-      "detail": "ca-8eeb737e0b7c: expires in 150 s; caller gone → expired; late Allow → 409"
+      "ms": 36,
+      "detail": "ca-88832262b610: expires in 150 s; caller gone → expired; late Allow → 409"
     },
     {
       "name": "PWA reconnect: a reply that arrived while the event socket was down shows in the open node",
       "ok": true,
-      "ms": 2453,
+      "ms": 2787,
       "detail": "socket held closed, reply sent meanwhile, shown after reconnect without reopening the node"
     },
     {
       "name": "hub restart: Claude session reattached (not ended, lock kept), chat works in the open node, stale approvals expired",
       "ok": true,
-      "ms": 2542,
-      "detail": "cc-88924eebbf96 idle, channel reconnected, lock kept; ca-bea3bf13a7fe expired (Allow → 409); reply shown in the open node"
+      "ms": 2632,
+      "detail": "cc-35e787fc9528 idle, channel reconnected, lock kept; ca-f13c10208a6d expired (Allow → 409); reply shown in the open node"
     },
     {
       "name": "a Claude session that exits on its own (/exit) is marked ended and gives back its device lock",
       "ok": true,
-      "ms": 1913,
-      "detail": "ended after 1.9 s (claude exited (tmux session gone)); PSU lock released"
+      "ms": 2335,
+      "detail": "ended after 2.3 s (claude exited (tmux session gone)); PSU lock released"
     },
     {
       "name": "web push sent for approvals (VAPID, aes128gcm)",
@@ -202,13 +202,12 @@
     {
       "name": "phone layout 390×844",
       "ok": true,
-      "ms": 2049,
+      "ms": 2117,
       "detail": "no horizontal scroll"
     }
   ],
   "consoleErrors": [
-    "Failed to load resource: the server responded with a status of 409 (Conflict)",
-    "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    "Failed to load resource: the server responded with a status of 409 (Conflict)"
   ],
   "unexpectedConsoleErrors": []
 }

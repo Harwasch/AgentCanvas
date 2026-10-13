@@ -11,8 +11,9 @@ Hook intake and MCP tool calls from hosts use separate, per-host tokens (see "Ho
 
 ## Snapshot + event stream
 - `GET /api/state` → `{ seq, boot, hosts[], accounts[], checkouts[], sessions[], approvals[] (pending only), nodes[] (app nodes), layout: {[nodeId]: {x,y,w,h,collapsed}}, config: { publicUrl, vapidPublicKey } }`
+  - `sessions[]` leaves out sessions that ended (`ended`/`error`/`applied`) more than `retention.stateEndedDays` (default 7) days ago; `GET /api/sessions/archive` lists those.
 - `WS /api/events?since=<seq>&boot=<boot>` (same origin, cookie auth) → each frame `{ seq, type, data, ts }`.
-  - The first frame is `{ seq: 0, type: "hello", data: { boot, seq, resync } }`. When `resync` is true (another hub run, or `since` is older than the replay ring), nothing is replayed, and the client reloads `/api/state`.
+  - The first frame is `{ seq: 0, type: "hello", data: { boot, seq, resync } }`. When `resync` is true (another hub run, or `since` is older than the replay ring), nothing is replayed, and the client reloads `/api/state`. The replay ring keeps at most 2,000 events and about 8 MB of them.
   - Every 25 s the hub sends `{ seq: 0, type: "keepalive" }` plus a WebSocket ping, and closes clients that did not answer the previous ping.
   - Messages are not in the snapshot: after every snapshot load, refetch `GET /api/sessions/:id/messages` for the transcripts on screen.
 
@@ -21,13 +22,20 @@ Hook intake and MCP tool calls from hosts use separate, per-host tokens (see "Ho
 | `host.upsert` | Host |
 | `checkout.upsert` | Checkout |
 | `session.upsert` | Session |
-| `message.upsert` | Message (streaming deltas re-send the same `id` with the longer `text`) |
+| `message.upsert` | Message: a new message, or a full replacement (a finished item). Not sent again when nothing changed. |
+| `message.append` | `{ id, session_id, seq, kind, append, at?, field?: "output", reset?: true, len? }`: streamed text for a message the client already has (see below) |
 | `approval.upsert` | Approval |
 | `node.upsert` | AppNode (canvas contract: `{id, type:"app", sessionId, title, url, thumbnail, status, version, ...}`) |
 | `node.remove` | `{ id }` |
 | `audit.append` | Audit |
 | `layout.upsert` | `{ nodeId, x, y, w, h, collapsed }` |
 | `toast` | `{ text, level: "info"|"warn"|"error" }` |
+
+### Streaming (`message.append`)
+- The first delta of a message arrives as `message.upsert` (with its `seq`, `role`, `kind`); later deltas are coalesced per message (about every 100 ms) into `message.append`. The hub writes the text to SQLite at most every 500 ms and when the message completes; `GET /api/sessions/:id/messages` always includes everything streamed so far.
+- `append` goes onto `text`, or onto `data.output` when `field` is `"output"` (command output). `at` is the offset where `append` starts: in `text`, or in all output received so far (`data.outputLen`). A client that already has text past `at` skips the overlap; one that is missing text before `at`, or does not have the message, refetches the session's messages.
+- Command output is kept as its last 64 KB (64 × 1024 characters) behind a `…truncated…\n` marker, in SQLite and on the wire: after appending, a client keeps the same tail (`marker + last 65,536 characters` once longer). When more than that arrives in one window the event carries `reset: true`: `append` is then the whole kept output and `len` the new `data.outputLen`.
+- A finished item (`item/completed`) is sent once more as `message.upsert` with the final text, which replaces the streamed one.
 
 ## Shapes
 ```ts
@@ -41,6 +49,7 @@ Session  { id, vendor: "claude"|"codex", kind: "local"|"cloud", host_id|null, ac
            meta: { channel?: "connected"|"disconnected", tmux?: string, hostOffline?: boolean /* host unreachable: kept, retried when it is back */,
                    cloudStatus?: string, diffSummary?: string, environment?: string, attempts?: number } }
 Message  { id, session_id, seq, role: "user"|"assistant"|"tool"|"system", kind: "text"|"tool"|"command"|"reasoning"|"status", text, data, created_at }
+           // kind "command": data { status, exitCode, output /* last 64 KB, see Streaming */, outputLen /* characters ever received */ }
 Approval { id, session_id, source: "codex"|"claude-channel"|"claude-hook"|"app-confirm"|"canvas-action", title, detail,
            data /* app-confirm and canvas-action: expiresAt (ms) */, status: "pending"|"allow"|"deny"|"expired", created_at }
 AppNode  { id, type: "app", appId, sessionId, hostId, dir, title, state: "preview"|"promoted", version, pinnedCommit, grantedVersion,
@@ -52,6 +61,7 @@ Audit    { id, ts, app_node_id, tool, tier, caller, args, allowed, reason, resul
 ## Commands
 - `POST /api/sessions` `{ vendor, where: "host"|"cloud", hostId?, accountId, checkoutId?, cwd?, branch?, environment?, prompt, attempts?, model?, effort? }` → Session
 - `GET  /api/sessions/:id/messages` → Message[]
+- `GET  /api/sessions/archive?before=<updated_at ms>&limit=<≤500, default 100>` → Session[]: ended sessions no longer in `/api/state`, newest first (the Sessions tab's "Show older ended sessions")
 - `POST /api/sessions/:id/send` `{ text }`
 - `POST /api/sessions/:id/interrupt`
 - `POST /api/sessions/:id/settings` `{ model?, effort? }`
@@ -170,7 +180,7 @@ cluster ← machine ← device (by `hostId`/`parentId`) ← HIL plan (by `hostId
 | Method | Path | Body | Result |
 |---|---|---|---|
 | POST | `/api/assistant/start` | `{hostId, accountId, prompt?}` | Session (`meta.role = "assistant"`, cwd = host home, `HUB_ROLE=assistant`) |
-| POST | `/api/canvas/view` | `{clientId, mode, nodes:[{id,kind,title,parent,x,y,w,h,ex}], selected, focusId, visible}` | What this browser shows; the canvas tools read the newest report |
+| POST | `/api/canvas/view` | `{clientId, mode, nodes:[{id,kind,title,parent,x,y,w,h,ex}], selected, focusId, visible, pageVisible, focused}` | What this browser shows. The PWA sends it 0.7 s after a change (camera included), only when it differs from the last one, never while the page is hidden, and once when the page is hidden (`pageVisible: false`), shown or focused again. The canvas tools read the report of a visible page first, then a focused one, then the newest; a report without the flags counts as visible and unfocused |
 | GET | `/api/canvas/batches` | — | Last 20 edit batches `{id, by, sessionId, summary, ids, at, undone}` |
 | POST | `/api/canvas/undo/:batchId` | — | Reverts the batch: layout rows back to their previous values, created notes/files/to-dos removed, removed nodes restored |
 | POST | `/api/approvals/:id` | `{decision}` | Also decides `source: "canvas-action"` approvals (confirm tier) |

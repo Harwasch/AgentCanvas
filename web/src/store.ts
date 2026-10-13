@@ -58,10 +58,30 @@ export interface HubData {
   hilRuns: Record<string, HilRun>;
 }
 
-const byId = <T extends { id: string }>(arr: T[] | undefined) => {
+const byId = <T extends { id: string }>(arr: T[] | undefined, norm?: (x: T) => T) => {
   const o: Record<string, T> = {};
-  (arr || []).forEach((x) => { o[x.id] = x; });
+  (arr || []).forEach((x) => { if (x && x.id) o[x.id] = norm ? norm(x) : x; });
   return o;
+};
+
+// Defensive defaults for v2 objects (the UI indexes into these lists freely).
+const arr = <T,>(v: T[] | null | undefined): T[] => (Array.isArray(v) ? v : []);
+export const norm = {
+  project: (p: Project): Project => ({ ...p, folders: arr(p.folders), checkouts: arr(p.checkouts), readme: p.readme || '', defaultBranch: p.defaultBranch || 'main',
+    stats: { files: 0, commits: 0, sizeMB: 0, branches: 0, sessions: 0, ...((p.stats || {}) as Partial<Project['stats']>) }, gh: p.gh || null }),
+  branch: (b: Branch): Branch => ({ ...b, checkouts: arr(b.checkouts), commits: arr(b.commits), apps: arr(b.apps), aheadBase: b.aheadBase || 0, behindBase: b.behindBase || 0,
+    aheadRemote: b.aheadRemote || 0, behindRemote: b.behindRemote || 0, pr: b.pr ? { ...b.pr, reviews: { approved: 0, changesRequested: 0, commented: 0, ...((b.pr.reviews || {}) as Partial<NonNullable<Branch['pr']>['reviews']>) } } : null }),
+  machine: (m: Machine): Machine => ({ ...m, gpu: arr(m.gpu), color: m.color || '#8A8F98', label: m.label || m.id }),
+  device: (d: Device): Device => ({ ...d, parentId: d.parentId || null, title: d.title || d.id, icon: d.icon || 'USB', lock: d.lock || null }),
+  plan: (p: HilPlan): HilPlan => ({ ...p, devices: arr(p.devices), setup: arr(p.setup), title: p.title || p.id }),
+  run: (r: HilRun): HilRun => ({ ...r, rows: arr(r.rows), log: arr(r.log), pass: r.pass || 0, fail: r.fail || 0, left: r.left || 0 }),
+  cnode: (c: CNode): CNode => {
+    const data = { ...(c.data || {}) };
+    if (c.type === 'review') { data.checklist = arr(data.checklist); data.comments = arr(data.comments); data.status ||= 'pending'; }
+    if (c.type === 'file') { data.kind ||= 'text'; data.newer ||= null; }
+    if (c.type === 'terminal') { data.status ||= 'open'; }
+    return { ...c, parentId: c.parentId ?? null, data };
+  },
 };
 
 export const hub = createStore<HubData>({
@@ -77,9 +97,9 @@ export function applySnapshot(s: StateSnapshot) {
     ready: true, authRequired: false, error: null, seq: s.seq || 0,
     hosts: byId(s.hosts), accounts: byId(s.accounts), checkouts: byId(s.checkouts), sessions: byId(s.sessions),
     approvals: byId(s.approvals), nodes: byId(s.nodes), layout: { ...(s.layout || {}) }, config: s.config || {},
-    projects: byId(s.projects), branches: byId(s.branches), machines: byId(s.machines), devices: byId(s.devices),
-    cnodes: byId(s.cnodes), todos: byId(s.todos), grants: byId(s.grants),
-    hilPlans: byId(s.hil?.plans), hilRuns: byId(s.hil?.runs),
+    projects: byId(s.projects, norm.project), branches: byId(s.branches, norm.branch), machines: byId(s.machines, norm.machine), devices: byId(s.devices, norm.device),
+    cnodes: byId(s.cnodes, norm.cnode), todos: byId(s.todos), grants: byId(s.grants),
+    hilPlans: byId(s.hil?.plans, norm.plan), hilRuns: byId(s.hil?.runs, norm.run),
   });
 }
 
@@ -91,9 +111,10 @@ function without<T>(rec: Record<string, T>, id: string): Record<string, T> {
 }
 
 /** Optimistically merge an object returned by a command (the event stream confirms it). */
-export function mergeLocal(kind: 'cnodes' | 'todos' | 'branches' | 'sessions' | 'grants' | 'devices' | 'hilRuns', obj: { id: string } | null | undefined) {
-  if (!obj || !obj.id) return;
-  hub.set((s) => ({ [kind]: { ...(s[kind] as Record<string, unknown>), [obj.id]: { ...((s[kind] as Record<string, object>)[obj.id] || {}), ...obj } } }) as Partial<HubData>);
+export function mergeLocal(kind: 'cnodes' | 'todos' | 'branches' | 'sessions' | 'grants' | 'devices' | 'hilRuns', obj: ({ id: string } & Record<string, unknown>) | object | null | undefined) {
+  const id = obj && (obj as { id?: unknown }).id;
+  if (typeof id !== 'string' || !id) return;
+  hub.set((s) => ({ [kind]: { ...(s[kind] as Record<string, unknown>), [id]: { ...((s[kind] as Record<string, object>)[id] || {}), ...obj } } }) as Partial<HubData>);
 }
 
 function upsertMsg(list: Message[] | undefined, m: Message): Message[] {
@@ -140,17 +161,17 @@ export function applyEvent(ev: HubEvent) {
       break;
     }
     case 'toast': hub.set({ seq }); toast(d.text, d.level); break;
-    case 'project.upsert': hub.set({ seq, projects: { ...s.projects, [d.id]: d } }); break;
-    case 'branch.upsert': hub.set({ seq, branches: { ...s.branches, [d.id]: d } }); break;
+    case 'project.upsert': hub.set({ seq, projects: { ...s.projects, [d.id]: norm.project(d) } }); break;
+    case 'branch.upsert': hub.set({ seq, branches: { ...s.branches, [d.id]: norm.branch(d) } }); break;
     case 'branch.remove': hub.set({ seq, branches: without(s.branches, d.id) }); break;
-    case 'machine.upsert': hub.set({ seq, machines: { ...s.machines, [d.id]: d } }); break;
-    case 'device.upsert': hub.set({ seq, devices: { ...s.devices, [d.id]: d } }); break;
-    case 'cnode.upsert': hub.set({ seq, cnodes: { ...s.cnodes, [d.id]: d } }); break;
+    case 'machine.upsert': hub.set({ seq, machines: { ...s.machines, [d.id]: norm.machine(d) } }); break;
+    case 'device.upsert': hub.set({ seq, devices: { ...s.devices, [d.id]: norm.device(d) } }); break;
+    case 'cnode.upsert': hub.set({ seq, cnodes: { ...s.cnodes, [d.id]: norm.cnode(d) } }); break;
     case 'cnode.remove': hub.set({ seq, cnodes: without(s.cnodes, d.id) }); break;
     case 'todo.upsert': hub.set({ seq, todos: { ...s.todos, [d.id]: d } }); break;
     case 'todo.remove': hub.set({ seq, todos: without(s.todos, d.id) }); break;
     case 'grant.upsert': hub.set({ seq, grants: { ...s.grants, [d.id]: d } }); break;
-    case 'hil.upsert': hub.set({ seq, hilRuns: { ...s.hilRuns, [d.id]: d } }); break;
+    case 'hil.upsert': hub.set({ seq, hilRuns: { ...s.hilRuns, [d.id]: norm.run(d) } }); break;
     default: hub.set({ seq });
   }
 }

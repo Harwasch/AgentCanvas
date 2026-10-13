@@ -283,14 +283,14 @@ export function v2Fixtures(checkouts: Checkout[]) {
   ];
   const dev = (d: Partial<Device> & Pick<Device, 'id' | 'hostId' | 'title' | 'icon'>): Device => ({ parentId: null, kind: '', port: '', fw: '', status: 'connected', source: 'declared', lock: null, updatedAt: now, ...d });
   const devices: Device[] = [
-    dev({ id: 'dev_stlink', hostId: 'mini-1', title: 'ST-LINK V3SET', icon: 'SWD', kind: 'Debug probe · SWD 24 MHz', port: '/dev/ttyACM0', fw: 'probe fw V3J15', lock: { sessionId: 's_cc_m1', since: ago(20 * 60e3) } }),
-    dev({ id: 'dev_pcba', hostId: 'mini-1', parentId: 'dev_stlink', title: 'Leg actuator PCBA rev A', icon: 'DUT', kind: 'STM32G474 · bench rig #1', port: 'via ST-LINK', fw: 'fw 0.7.3-3f9c2e1', status: 'busy' }),
-    dev({ id: 'dev_pcan', hostId: 'mini-1', title: 'PCAN-USB FD', icon: 'CAN', kind: 'USB-CAN interface', port: 'can0 · 1 Mbit/s', source: 'discovered' }),
-    dev({ id: 'dev_bus', hostId: 'mini-1', parentId: 'dev_pcan', title: 'Leg CAN bus · 3 actuators', icon: 'BUS', kind: 'IDs 0x101–0x103', port: '2.1 k frames/s', status: 'reachable' }),
-    dev({ id: 'dev_psu', hostId: 'mini-2', title: 'Bench PSU', icon: 'LAN', kind: 'SCPI over LAN', port: '192.168.1.52', fw: '48.0 V · 2.1 A', lock: { sessionId: 's_cx_m2', since: ago(30 * 60e3) } }),
-    dev({ id: 'dev_scope', hostId: 'mini-2', title: 'Rigol DS1054Z', icon: 'USB', kind: 'Oscilloscope · USBTMC', port: '/dev/usbtmc0', status: 'missing' }),
+    dev({ id: 'mini-1:stlink', hostId: 'mini-1', title: 'ST-LINK V3SET', icon: 'SWD', kind: 'Debug probe · SWD 24 MHz', port: '/dev/ttyACM0', fw: 'probe fw V3J15', lock: { sessionId: 's_cc_m1', since: ago(20 * 60e3) } }),
+    dev({ id: 'mini-1:pcba', hostId: 'mini-1', parentId: 'mini-1:stlink', title: 'Leg actuator PCBA rev A', icon: 'DUT', kind: 'STM32G474 · bench rig #1', port: 'via ST-LINK', fw: 'fw 0.7.3-3f9c2e1', status: 'busy' }),
+    dev({ id: 'mini-1:pcan', hostId: 'mini-1', title: 'PCAN-USB FD', icon: 'CAN', kind: 'USB-CAN interface', port: 'can0 · 1 Mbit/s', source: 'discovered' }),
+    dev({ id: 'mini-1:canbus', hostId: 'mini-1', parentId: 'mini-1:pcan', title: 'Leg CAN bus · 3 actuators', icon: 'BUS', kind: 'IDs 0x101–0x103', port: '2.1 k frames/s', status: 'reachable' }),
+    dev({ id: 'mini-2:psu', hostId: 'mini-2', title: 'Bench PSU', icon: 'LAN', kind: 'SCPI over LAN', port: '192.168.1.52', fw: '48.0 V · 2.1 A', lock: { sessionId: 's_cx_m2', since: ago(30 * 60e3) } }),
+    dev({ id: 'mini-2:scope', hostId: 'mini-2', title: 'Rigol DS1054Z', icon: 'USB', kind: 'Oscilloscope · USBTMC', port: '/dev/usbtmc0', status: 'missing' }),
   ];
-  const plan: HilPlan = { id: 'hil_actuator', title: 'Actuator V&V', hostId: 'mini-1', devices: ['dev_stlink', 'dev_pcba', 'dev_pcan', 'dev_bus'], plan: 'SYS/vv/actuator_test_plan.md', setup: ['mini-1', 'PCAN-USB FD', 'leg CAN bus', 'actuator PCBA', 'ST-LINK (flash)'] };
+  const plan: HilPlan = { id: 'mini-1:actuator-vv', title: 'Actuator V&V', hostId: 'mini-1', devices: ['mini-1:stlink', 'mini-1:pcba', 'mini-1:pcan', 'mini-1:canbus'], plan: 'SYS/vv/actuator_test_plan.md', setup: ['mini-1', 'PCAN-USB FD', 'leg CAN bus', 'actuator PCBA', 'ST-LINK (flash)'] };
   const run = makeRun(plan, 'run_142', 's_cc_m1', ago(3 * 60e3));
   for (let i = 0; i < 6; i++) stepRun(run);
   const grants: Grant[] = [
@@ -338,7 +338,7 @@ export function v2Fixtures(checkouts: Checkout[]) {
     cn({ id: 'file_loop', type: 'file', parentId: 's_cx_m1', data: { source: { kind: 'checkout', checkoutId: 'co_hexapod_m1' }, path: 'fw/foc/current_loop.c', sha: SHA.hexWinch, kind: 'code', newer: null } }),
     cn({ id: 'file_gait', type: 'file', data: { source: { kind: 'github', projectId: HEX, ref: 'main' }, path: 'AI/sim/gait/gait_sweep.png', sha: SHA.hexMain, kind: 'image', newer: null } }),
     cn({ id: 'note_1', type: 'note', data: { title: 'Note', text: 'Bench rig: ask before taking the PSU above 48 V.\nST-LINK is shared — release it after flashing.' } }),
-    cn({ id: 'term_m1', type: 'terminal', data: { hostId: 'mini-1', cwd: '~', mode: 'shell', sessionId: null, status: 'open' } }),
+    cn({ id: 'term_m1', type: 'terminal', parentId: 'mini-1', data: { hostId: 'mini-1', cwd: '~', mode: 'shell', sessionId: null, status: 'open' } }),
   ];
   return { projects, branches, machines, devices, cnodes, todos, grants, hil: { plans: [plan], runs: [run] } };
 }
@@ -406,8 +406,10 @@ function headFor(st: V2State, source: FileSource): string {
 }
 
 let ctxRef: V2Ctx | null = null;
-export function handleV2(method: string, p: string, url: URL, body: any, ctx: V2Ctx): ApiResponse | null {
+export function handleV2(method: string, rawPath: string, url: URL, body: any, ctx: V2Ctx): ApiResponse | null {
   ctxRef = ctx;
+  let p = rawPath;
+  try { p = decodeURIComponent(rawPath); } catch { /* keep raw */ }
   const st = ctx.state;
   const emit = ctx.emit;
   let m: RegExpMatchArray | null;
@@ -534,7 +536,7 @@ export function handleV2(method: string, p: string, url: URL, body: any, ctx: V2
     return ok(clone(b));
   }
   if ((m = p.match(/^\/api\/branches\/(.+)\/(refresh|files)$/))) {
-    const id = decodeURIComponent(m[1]);
+    const id = m[1];
     const b = st.branches.find((x) => x.id === id);
     if (!b) return err(404, { error: 'no such branch' });
     if (m[2] === 'refresh') { b.updatedAt = Date.now(); emit('branch.upsert', clone(b)); return ok(clone(b)); }

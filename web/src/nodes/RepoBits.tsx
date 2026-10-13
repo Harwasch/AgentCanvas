@@ -28,7 +28,7 @@ export function CiChip({ ci }: { ci: Branch['ci'] }) {
   const inner = (
     <>
       {st === 'pending' ? <span className="spin" style={{ width: 9, height: 9 }} /> : <span className="dot" style={{ width: 7, height: 7, background: CI_COLOR[st] }} />}
-      CI {CI_LABEL[st]}{ci && ci.total ? <span className="mono" style={{ color: '#A3A7AF' }}> {ci.passed}/{ci.total}</span> : null}
+      {st === 'none' ? 'no CI' : `CI ${CI_LABEL[st]}`}{ci && ci.total ? <span className="mono" style={{ color: '#A3A7AF' }}> {ci.passed}/{ci.total}</span> : null}
     </>
   );
   const style = { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#C9CCD2', border: `1px solid ${CI_COLOR[st]}55`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap' as const };

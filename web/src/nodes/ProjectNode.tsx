@@ -82,8 +82,8 @@ function ProjectNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
         </div>
       ) : <div style={{ flex: 1, fontSize: 12, color: '#6E727A' }}>No README on {p.defaultBranch}.</div>}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 'none' }} onPointerDown={stop}>
-        <span style={{ color: '#8A8F98', fontSize: 12, flex: 1, whiteSpace: 'nowrap' }}>{counts.br} branch{counts.br === 1 ? '' : 'es'} · {counts.act} active</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 'none', minWidth: 0 }} onPointerDown={stop}>
+        <span className="ell" style={{ color: '#8A8F98', fontSize: 12, flex: 1 }}>{counts.br} branch{counts.br === 1 ? '' : 'es'} · {counts.act} active</span>
         <button className="b" style={{ height: 26 }} data-testid="project-repo-browser" onClick={() => ui.set({ tab: 'repos', reviewId: null, repoCheckout: firstCo || null, repoSource: firstCo ? null : source })}>Repo browser</button>
         <button className="b" style={{ height: 26 }} data-testid="project-files" onClick={() => ui.set({ quickOpen: { source, parentId: p.id, scopeLabel: p.name } })}>Files</button>
         <button className="b" style={{ height: 26 }} data-testid="new-branch" onClick={() => ui.set({ branchModal: { projectId: p.id, base: p.defaultBranch, checkoutId: mainCos[0] || firstCo } })}>New branch</button>

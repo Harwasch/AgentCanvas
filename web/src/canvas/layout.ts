@@ -23,11 +23,9 @@ export const checkoutH = (c: Checkout) => {
 };
 export const appSize = (n: AppNode) => ({ w: (n.manifest?.node?.width || 640) + 16, h: (n.manifest?.node?.height || 440) + 82 });
 
-export const machineNodeId = (id: string) => `m:${id}`;
-export const deviceNodeId = (id: string) => `dev:${id}`;
-export const hilNodeId = (id: string) => `hil:${id}`;
+// Machines, devices, HIL plans and grants use their own ids on the canvas (so `?focus=<id>` works);
+// a prefixed id is only used if that raw id is already taken by another node.
 export const refNodeId = (id: string) => `ref:${id}`;
-export const grantNodeId = (id: string) => `grant:${id}`;
 export const CLUSTER_ID = 'cluster';
 export const machineKey = (id: string) => (id === 'claude-cloud' ? 'cloud:claude' : id === 'codex-cloud' ? 'cloud:codex' : id);
 
@@ -76,6 +74,14 @@ export function buildGraph(g: GraphInput): Graph {
   let order = 0;
   const add = (n: Omit<GNode, 'order'>) => { const x = { ...n, order: order++ }; nodes.push(x); byId[x.id] = x; return x; };
   const ex = (id: string) => !!g.expanded[id] && !g.phone;
+  const cidMaps: Record<string, Record<string, string>> = { m: {}, dev: {}, hil: {}, grant: {} };
+  const cid = (prefix: 'm' | 'dev' | 'hil' | 'grant', raw: string) => (cidMaps[prefix][raw] ||= byId[raw] || Object.values(cidMaps).some((mm) => Object.values(mm).includes(raw)) ? `${prefix}:${raw}` : raw);
+  const machineNodeId = (raw: string) => cidMaps.m[raw] || cid('m', raw);
+  const deviceNodeId = (raw: string) => cidMaps.dev[raw] || cid('dev', raw);
+  const hilNodeId = (raw: string) => cidMaps.hil[raw] || cid('hil', raw);
+  const grantNodeId = (raw: string) => cidMaps.grant[raw] || cid('grant', raw);
+  const hasMachine = (raw: string) => !!cidMaps.m[raw] && !!byId[cidMaps.m[raw]];
+  const hasDevice = (raw: string) => !!cidMaps.dev[raw] && !!byId[cidMaps.dev[raw]];
 
   // ---- repos
   const projects = Object.values(g.projects).sort((a, b) => a.name.localeCompare(b.name));
@@ -100,7 +106,7 @@ export function buildGraph(g: GraphInput): Graph {
   branches.forEach((b) => {
     if (isDefault(b, g)) return;
     const e = ex(b.id);
-    add({ id: b.id, kind: 'branch', ref: b.id, w: e ? 560 : 372, h: e ? 560 : 214, compute: '', parent: null });
+    add({ id: b.id, kind: 'branch', ref: b.id, w: e ? 560 : 380, h: e ? 560 : 206, compute: '', parent: null });
   });
   branches.forEach((b) => {
     const n = byId[b.id];
@@ -166,7 +172,7 @@ export function buildGraph(g: GraphInput): Graph {
   machines.forEach((m) => {
     const id = machineNodeId(m.id);
     const e = ex(id);
-    add({ id, kind: 'machine', ref: m.id, w: e ? 440 : 270, h: e ? 360 : 140, compute: machineKey(m.id), parent: CLUSTER_ID });
+    add({ id, kind: 'machine', ref: m.id, w: e ? 440 : 280, h: e ? 380 : 152, compute: machineKey(m.id), parent: CLUSTER_ID });
     edges.push({ from: CLUSTER_ID, to: id, color: m.color || '#3A3E46', op: 0.5 });
   });
   const devices = Object.values(g.devices).sort((a, b) => a.title.localeCompare(b.title));
@@ -176,24 +182,24 @@ export function buildGraph(g: GraphInput): Graph {
   });
   devices.forEach((d) => {
     const id = deviceNodeId(d.id);
-    let parent: string | null = d.parentId && byId[deviceNodeId(d.parentId)] && d.parentId !== d.id ? deviceNodeId(d.parentId) : null;
-    if (!parent && byId[machineNodeId(d.hostId)]) parent = machineNodeId(d.hostId);
+    let parent: string | null = d.parentId && d.parentId !== d.id && hasDevice(d.parentId) ? deviceNodeId(d.parentId) : null;
+    if (!parent && hasMachine(d.hostId)) parent = machineNodeId(d.hostId);
     byId[id].parent = parent;
     if (parent) edges.push({ from: parent, to: id, color: computeColor(d.hostId, g.hosts), op: 0.55 });
   });
   Object.values(g.hilPlans).forEach((p) => {
     const id = hilNodeId(p.id);
-    const devs = p.devices.filter((x) => byId[deviceNodeId(x)]);
+    const devs = p.devices.filter((x) => hasDevice(x));
     // under the deepest device of the plan's setup (the DUT end of the chain)
     const depth = (nid: string) => { let d = 0, cur: string | null = nid; while (cur && d < 50) { cur = byId[cur]?.parent || null; d++; } return d; };
     const best = devs.map(deviceNodeId).sort((a, b) => depth(b) - depth(a))[0];
-    const parent = best || (byId[machineNodeId(p.hostId)] ? machineNodeId(p.hostId) : null);
+    const parent = best || (hasMachine(p.hostId) ? machineNodeId(p.hostId) : null);
     add({ id, kind: 'hil', ref: p.id, w: 620, h: 600, compute: p.hostId, parent });
     if (parent) edges.push({ from: parent, to: id, color: '#3A3E46' });
   });
   // agent reference chips: active local sessions under their host's machine
   sessions.forEach((s) => {
-    if (s.kind !== 'local' || !s.host_id || !isActive(s) || !byId[machineNodeId(s.host_id)]) return;
+    if (s.kind !== 'local' || !s.host_id || !isActive(s) || !hasMachine(s.host_id)) return;
     const id = refNodeId(s.id);
     add({ id, kind: 'agentref', ref: s.id, w: 250, h: 40, compute: s.host_id, parent: machineNodeId(s.host_id) });
     edges.push({ from: machineNodeId(s.host_id), to: id, color: computeColor(s.host_id, g.hosts), dash: '4 5', op: 0.6 });
@@ -224,13 +230,14 @@ export function buildGraph(g: GraphInput): Graph {
     let parent: string | null = null;
     const pick = (id: string | null | undefined) => {
       if (!id || parent) return;
-      if (byId[id] && id !== c.id) parent = id;
-      else if (g.branches[id] && brNodeOf[id]) parent = brNodeOf[id];
+      if (g.branches[id] && brNodeOf[id]) parent = brNodeOf[id];
+      else if (hasMachine(id)) parent = machineNodeId(id);
+      else if (byId[id] && id !== c.id) parent = id;
     };
     pick(c.parentId);
     if (c.type === 'review' || c.type === 'htodo' || c.type === 'suggest' || c.type === 'terminal') pick(c.data?.sessionId);
     if (c.type === 'suggest') pick(c.data?.branchId);
-    if (c.type === 'terminal' && c.data?.hostId) pick(machineNodeId(c.data.hostId));
+    if (c.type === 'terminal' && c.data?.hostId) pick(c.data.hostId);
     // guard against cycles between canvas nodes
     let cur: string | null = parent, hops = 0;
     while (cur && hops++ < 60) { if (cur === c.id) { parent = null; break; } cur = byId[cur]?.parent || null; }

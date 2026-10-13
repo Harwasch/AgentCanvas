@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { isMock } from './api';
 import { Canvas } from './canvas/Canvas';
 import { ShotApp } from './nodes/AppNode';
+import { NodeView, sheetTarget } from './nodes/NodeView';
 import { SessionNode, useSessionAttention } from './nodes/SessionNode';
 import { disablePush, enablePush, pushEnabled, pushSupported } from './push';
 import { focusNode, hub, lsSet, toast, ui, useHub, useUI, type LayoutMode, type Tab } from './store';
@@ -11,6 +12,9 @@ import { ConfirmDialog, PromoteModal, Toasts, TokenPrompt } from './views/Modals
 import { ReposView } from './views/ReposView';
 import { SessionsView } from './views/SessionsView';
 import { SpawnDialog } from './views/SpawnDialog';
+import { AddMenu } from './views/AddMenu';
+import { BranchModal } from './views/BranchModal';
+import { QuickOpen } from './views/QuickOpen';
 
 export default function App() {
   const shot = useMemo(() => new URLSearchParams(location.search).get('shot'), []);
@@ -55,9 +59,10 @@ function Main() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') { e.preventDefault(); ui.set({ quickOpen: { parentId: null } }); return; }
       if (e.key !== 'Escape') return;
       const u = ui.get();
-      if (u.confirm || u.spawnOpen || u.promoteId) return;
+      if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu) return;
       if (Object.keys(u.expanded).length) ui.set({ expanded: {} });
     };
     window.addEventListener('keydown', onKey);
@@ -77,6 +82,9 @@ function Main() {
       <TabStrip />
       {phone ? <SessionSheet /> : null}
       <SpawnDialog />
+      <BranchModal />
+      <QuickOpen />
+      <AddMenu />
       <PromoteModal />
       <ConfirmDialog />
       <Toasts />
@@ -96,14 +104,27 @@ function Connecting() {
 function SessionSheet() {
   const expanded = useUI((u) => u.expanded);
   const tab = useUI((u) => u.tab);
-  const sessions = useHub((h) => h.sessions);
-  const id = Object.keys(expanded).reverse().find((k) => sessions[k]);
-  if (!id || tab !== 'canvas') return null;
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#15171B', paddingTop: 'env(safe-area-inset-top)' }}>
-      <SessionNode id={id} mode="sheet" />
-    </div>
-  );
+  const h = useHub((x) => x);
+  if (tab !== 'canvas') return null;
+  // the most recently expanded big node opens as a full-screen sheet
+  for (const k of Object.keys(expanded).reverse()) {
+    if (h.sessions[k]) {
+      return (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#15171B', paddingTop: 'env(safe-area-inset-top)' }}>
+          <SessionNode id={k} mode="sheet" />
+        </div>
+      );
+    }
+    const t = sheetTarget(k, h);
+    if (t) {
+      return (
+        <div data-testid="node-sheet" style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#15171B', paddingTop: 'env(safe-area-inset-top)' }}>
+          <NodeView kind={t.kind} id={k} refId={t.ref} mode="sheet" h={h} />
+        </div>
+      );
+    }
+  }
+  return null;
 }
 
 const LAYOUTS: [LayoutMode, string][] = [['cluster', 'Cluster'], ['columns', 'Columns'], ['custom', 'Custom']];
@@ -220,7 +241,7 @@ function NeedsYou() {
     if (!n) { toast('Nothing needs you right now'); return; }
     const item = list[idx.current % n];
     idx.current = (idx.current + 1) % n;
-    focusNode(item.sessionId, true);
+    focusNode(item.id, true);
   };
   return (
     <button className="b" data-testid="needs-you" onClick={go}
@@ -244,9 +265,15 @@ function TopBar({ phone }: { phone: boolean }) {
         <Icon name="logo" size={20} sw={1.6} />
         <span style={{ fontWeight: 600, letterSpacing: '-0.01em', whiteSpace: 'nowrap' }}>{phone ? 'Hub' : 'Agent Canvas'}</span>
       </div>
-      <button className="b" style={{ height: 30, marginLeft: phone ? 2 : 8, flex: 'none' }} data-testid="add-button" onClick={() => ui.set({ spawnOpen: true, spawnPreset: null })}>
-        <Icon name="plus" size={13} sw={2.2} />Add
-      </button>
+      <div style={{ display: 'flex', marginLeft: phone ? 2 : 8, flex: 'none' }}>
+        <button className="b" style={{ height: 30, borderTopRightRadius: 0, borderBottomRightRadius: 0 }} data-testid="add-button" title="Launch an agent" onClick={() => ui.set({ spawnOpen: true, spawnPreset: null })}>
+          <Icon name="plus" size={13} sw={2.2} />Add
+        </button>
+        <button className="b" style={{ height: 30, width: 24, padding: 0, justifyContent: 'center', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 0 }} aria-label="Add a node" title="Add a file, note, to-do list or terminal"
+          data-testid="add-menu-button" onClick={() => ui.set((u) => ({ addMenu: u.addMenu ? null : { parentId: null } }))}>
+          <Icon name="chev" size={12} />
+        </button>
+      </div>
       {!phone ? <LayoutSeg /> : null}
       <div style={{ flex: 1 }} />
       {!phone ? <Search /> : null}
@@ -278,7 +305,8 @@ function TabStrip() {
   const connected = useHub((h) => h.connected);
   const focusId = useUI((u) => u.focusId);
   const active = useMemo(() => Object.values(sessions).filter(isActive).length, [sessions]);
-  const focusTitle = useHub((h) => (focusId ? h.sessions[focusId]?.title || h.nodes[focusId]?.title || h.checkouts[focusId]?.repoName : null));
+  const focusTitle = useHub((h) => (focusId ? h.sessions[focusId]?.title || h.nodes[focusId]?.title || h.checkouts[focusId]?.repoName || h.projects[focusId]?.name
+    || h.branches[focusId]?.name || h.machines[focusId]?.label || h.devices[focusId]?.title || h.hilPlans[focusId]?.title || h.cnodes[focusId]?.data?.title || h.cnodes[focusId]?.data?.path : null));
   return (
     <div className="tabstrip noscrollbar" role="tablist">
       {TABS.map((t) => {

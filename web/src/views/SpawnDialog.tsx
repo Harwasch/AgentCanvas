@@ -21,12 +21,13 @@ function SpawnForm() {
   const presetCo = preset?.checkoutId ? checkouts[preset.checkoutId] : undefined;
 
   const [vendor, setVendor] = useState<Vendor>('claude');
-  const [where, setWhere] = useState<string>(presetCo?.host_id || hostList[0]?.id || 'cloud');
+  const [where, setWhere] = useState<string>(preset?.hostId || presetCo?.host_id || hostList[0]?.id || 'cloud');
   const [accountId, setAccountId] = useState(accList[0]?.id || '');
   const [checkoutId, setCheckoutId] = useState(presetCo?.id || '');
-  const [branch, setBranch] = useState(presetCo?.branch || '');
+  const [branch, setBranch] = useState(preset?.branch ?? presetCo?.branch ?? '');
+  const keepBranch = useRef(!!preset?.branch);
   const [env, setEnv] = useState('');
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(preset?.prompt || '');
   const [attempts, setAttempts] = useState(1);
   const [openNative, setOpenNative] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -51,7 +52,11 @@ function SpawnForm() {
       setCheckoutId(same?.id || coOptions[0]?.id || '');
     } else if (!checkoutId && coOptions[0]) setCheckoutId(coOptions[0].id);
   }, [coOptions, checkoutId, checkouts, cloud]);
-  useEffect(() => { const c = checkouts[checkoutId]; if (c) setBranch(c.branch || ''); }, [checkoutId, checkouts]);
+  useEffect(() => {
+    // a preset branch (e.g. "Launch agent here") survives the initial checkout pick
+    if (keepBranch.current) return;
+    const c = checkouts[checkoutId]; if (c) setBranch(c.branch || '');
+  }, [checkoutId, checkouts]); // eslint-disable-line react-hooks/exhaustive-deps
   const envs = useMemo(() => {
     const a = accounts[accountId];
     if (!a) return [];
@@ -131,7 +136,7 @@ function SpawnForm() {
             </select>
           </label>
           <label className="field">Repo / checkout
-            <select className="sel mono" data-testid="spawn-checkout" value={checkoutId} onChange={(e) => setCheckoutId(e.target.value)}>
+            <select className="sel mono" data-testid="spawn-checkout" value={checkoutId} onChange={(e) => { keepBranch.current = false; setCheckoutId(e.target.value); }}>
               {!coOptions.length ? <option value="">{cloud ? '(no repo indexed)' : '(none · home dir)'}</option> : null}
               {coOptions.map((c) => <option key={c.id} value={c.id}>{c.repoName}{cloud ? '' : ` · ${c.path}`}</option>)}
             </select>

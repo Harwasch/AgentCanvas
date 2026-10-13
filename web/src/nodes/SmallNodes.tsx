@@ -205,11 +205,10 @@ function DeviceNodeImpl({ id }: { id: string; mode: NodeMode }) {
   const sessions = useHub((h) => h.sessions);
   const hosts = useHub((h) => h.hosts);
   const lockSession = d?.lock ? sessions[d.lock.sessionId] : undefined;
-  const candidates = useMemo(() => Object.values(sessions).filter((s) => isActive(s) && (s.kind === 'cloud' || s.host_id === d?.hostId))
-    .sort((a, b) => Number(b.host_id === d?.hostId) - Number(a.host_id === d?.hostId)), [sessions, d?.hostId]);
+  const candidates = useMemo(() => Object.values(sessions).filter((s) => isActive(s) && s.kind === 'local' && s.host_id === d?.hostId), [sessions, d?.hostId]);
   if (!d) return null;
   const [dot, fg] = DEV_STATUS[d.status] || DEV_STATUS.unknown;
-  const lockColor = lockSession ? computeColor(computeKey(lockSession), hosts) : '#8A8F98';
+  const lockColor = lockSession ? computeColor(computeKey(lockSession), hosts) : d.lock ? '#E7E8EA' : '#8A8F98';
   const lock = (sid: string | null) => {
     const prev = hub.get().devices[d.id];
     hub.set((s) => ({ devices: { ...s.devices, [d.id]: { ...d, lock: sid ? { sessionId: sid, since: Date.now() } : null } } }));
@@ -227,24 +226,18 @@ function DeviceNodeImpl({ id }: { id: string; mode: NodeMode }) {
       <span className="mono ell" style={{ fontSize: 11, color: '#8A8F98' }}>{[d.port, d.fw].filter(Boolean).join(' · ') || '—'}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 'auto', minWidth: 0 }} onPointerDown={stop}>
         {d.lock ? (
-          <>
-            <button className="lnk" data-testid="device-lock-chip" onClick={() => lockSession && focusNode(lockSession.id, true)}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#C9CCD2', border: `1px solid ${lockColor}66`, borderRadius: 999, padding: '1px 8px', background: 'transparent', minWidth: 0, flex: 1, overflow: 'hidden' }}>
-              <span className="dot" style={{ width: 6, height: 6, background: lockColor }} /><span className="ell">in use · {lockSession?.title || d.lock.sessionId}</span>
-            </button>
-            <button className="b ghost" data-testid="device-lock" data-action="release" style={{ height: 22, fontSize: 11, padding: '0 6px' }} onClick={() => lock(null)}>Release</button>
-          </>
-        ) : (
-          <>
-            <span style={{ fontSize: 11, color: '#8A8F98' }}>free</span>
-            <span style={{ flex: 1 }} />
-            <select className="sel" data-testid="device-lock" data-action="lock" aria-label="Lock to session" value="" style={{ height: 22, fontSize: 11, maxWidth: 160 }}
-              onChange={(e) => { if (e.target.value) lock(e.target.value); }}>
-              <option value="">Lock to session…</option>
-              {candidates.map((s) => <option key={s.id} value={s.id}>{s.title || s.id}</option>)}
-            </select>
-          </>
-        )}
+          <button className="lnk" data-testid="device-lock-chip" onClick={() => lockSession && focusNode(lockSession.id, true)} title={lockSession ? `Go to ${lockSession.title}` : undefined}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#C9CCD2', border: `1px solid ${lockColor}66`, borderRadius: 999, padding: '1px 8px', background: 'transparent', minWidth: 0, flex: 1, overflow: 'hidden' }}>
+            <span className="dot" style={{ width: 6, height: 6, background: lockColor }} /><span className="ell">in use · {d.lock.sessionId === 'you' ? 'you' : lockSession?.title || d.lock.sessionId}</span>
+          </button>
+        ) : <span style={{ fontSize: 11, color: '#8A8F98', flex: 1 }}>free</span>}
+        <select className="sel" data-testid="device-lock" aria-label="Lock to session" value={d.lock?.sessionId || ''} style={{ height: 22, fontSize: 11, maxWidth: d.lock ? 96 : 150, flex: 'none' }}
+          onChange={(e) => lock(e.target.value || null)}>
+          <option value="">{d.lock ? 'Release' : 'Lock to session…'}</option>
+          <option value="you">You</option>
+          {candidates.map((s) => <option key={s.id} value={s.id}>{s.title || s.id}</option>)}
+          {d.lock && d.lock.sessionId !== 'you' && !candidates.some((s) => s.id === d.lock!.sessionId) ? <option value={d.lock.sessionId}>{lockSession?.title || d.lock.sessionId}</option> : null}
+        </select>
       </div>
     </div>
   );

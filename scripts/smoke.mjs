@@ -374,7 +374,7 @@ try {
   let imgNode, docNode;
   await check('any file as a node: quick open → image and markdown nodes render', async () => {
     await page.goto(`${BASE}/`);
-    await T('add-button').click().catch(() => {});
+    await H('add-menu-button').click();
     await H('add-file').click();
     await H('quick-open').waitFor({ timeout: 10000 });
     const opts = await H('qo-source').locator('option').allTextContents();
@@ -410,13 +410,13 @@ try {
 
   await check('note and to-do list nodes (create, edit, toggle, dispatch to an agent)', async () => {
     await page.goto(`${BASE}/`);
-    await T('add-button').click().catch(() => {});
+    await H('add-menu-button').click();
     await H('add-note').click();
     const note = await until(async () => (await state()).cnodes.find((n) => n.type === 'note'), 'note node', 10000);
     await focus(note.id);
     await page.locator('[data-testid="note-node"] [data-testid="note-text"]').first().fill('Fab quote due Friday.');
     await until(async () => (await state()).cnodes.find((n) => n.id === note.id && n.data.text === 'Fab quote due Friday.'), 'note saved', 10000);
-    await T('add-button').click().catch(() => {});
+    await H('add-menu-button').click();
     await H('add-todos').click();
     const list = await until(async () => (await state()).cnodes.find((n) => n.type === 'todos'), 'to-do list', 10000);
     await focus(list.id);

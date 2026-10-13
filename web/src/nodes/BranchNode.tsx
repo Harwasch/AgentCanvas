@@ -14,8 +14,25 @@ export function branchSource(b: Branch): FileSource {
 export function launchHere(b: Branch, checkouts: Record<string, { id: string; host_id: string }>, projectCheckouts: string[]) {
   const co = b.checkouts.find((c) => checkouts[c]);
   if (co) openSpawn({ checkoutId: co, hostId: checkouts[co].host_id, branch: b.name });
-  else openSpawn({ checkoutId: projectCheckouts.find((c) => checkouts[c]), branch: b.name });
+  else openSpawn({ checkoutId: projectCheckouts.find((c) => checkouts[c]), branch: b.name, hostId: b.pushed ? 'cloud' : undefined });
 }
+
+export function BranchCommits({ b }: { b: Branch }) {
+  if (!b.commits.length) return <span style={{ fontSize: 12, color: '#6E727A' }}>No commits on this branch yet.</span>;
+  return (
+    <>
+      {b.commits.slice(0, 8).map((c) => (
+        <div key={c.sha} data-testid="branch-commit" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, minWidth: 0 }}>
+          <span className="mono" style={{ color: '#8A8F98', fontSize: 11, flex: 'none' }}>{shortSha(c.sha)}</span>
+          <span className="ell" style={{ flex: 1 }}>{c.subject}</span>
+          <span style={{ color: '#6E727A', fontSize: 11, flex: 'none', whiteSpace: 'nowrap' }}>{c.author} · {timeAgo(c.at)}</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+const BTN = { height: 24, padding: '0 8px', fontSize: 11.5 } as const;
 
 function BranchNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
   const b = useHub((h) => h.branches[id]);
@@ -84,13 +101,7 @@ function BranchNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
           <Worktrees ids={b.checkouts} showBranch={false} showApps max={6} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span className="cap">Last commits</span>
-            {b.commits.length ? b.commits.slice(0, 8).map((c) => (
-              <div key={c.sha} data-testid="branch-commit" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, minWidth: 0 }}>
-                <span className="mono" style={{ color: '#8A8F98', fontSize: 11, flex: 'none' }}>{shortSha(c.sha)}</span>
-                <span className="ell" style={{ flex: 1 }}>{c.subject}</span>
-                <span style={{ color: '#6E727A', fontSize: 11, flex: 'none', whiteSpace: 'nowrap' }}>{c.author} · {timeAgo(c.at)}</span>
-              </div>
-            )) : <span style={{ fontSize: 12, color: '#6E727A' }}>No commits on this branch yet.</span>}
+            <BranchCommits b={b} />
           </div>
           {remoteApps.length ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -109,10 +120,10 @@ function BranchNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
       ) : null}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: big ? 0 : 'auto', flexWrap: 'wrap', flex: 'none' }} onPointerDown={stop}>
-        <button className="b" style={{ height: 26 }} data-testid="branch-launch" onClick={() => launchHere(b, checkouts, p?.checkouts || [])}>Launch agent here</button>
-        <button className="b" style={{ height: 26 }} data-testid="new-branch" onClick={() => ui.set({ branchModal: { projectId: b.projectId, base: b.name, checkoutId: b.checkouts.find((c) => checkouts[c]) || p?.checkouts[0] } })}>New branch</button>
-        <button className="b" style={{ height: 26 }} data-testid="branch-files" onClick={() => ui.set({ quickOpen: { source: src, parentId: b.id, scopeLabel: b.name } })}>Files</button>
-        {ghUrl && b.pushed ? <a className="b lnk" style={{ height: 26 }} href={ghUrl} target="_blank" rel="noopener noreferrer">GitHub ↗</a> : null}
+        <button className="b" style={BTN} data-testid="branch-launch" onClick={() => launchHere(b, checkouts, p?.checkouts || [])}>Launch agent here</button>
+        <button className="b" style={BTN} data-testid="new-branch" onClick={() => ui.set({ branchModal: { projectId: b.projectId, base: b.name, checkoutId: b.checkouts.find((c) => checkouts[c]) || p?.checkouts[0] } })}>New branch</button>
+        <button className="b" style={BTN} data-testid="branch-files" onClick={() => ui.set({ quickOpen: { source: src, parentId: b.id, scopeLabel: b.name } })}>Files</button>
+        {ghUrl && b.pushed ? <a className="b lnk" style={BTN} href={ghUrl} target="_blank" rel="noopener noreferrer">GitHub ↗</a> : null}
       </div>
     </div>
   );

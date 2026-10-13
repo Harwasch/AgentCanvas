@@ -1,25 +1,38 @@
 // Infinite canvas: pan / zoom / pinch, draggable nodes, auto layout, edges.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { AppNode, ViewportCtx } from '../nodes/AppNode';
-import { CheckoutNode } from '../nodes/CheckoutNode';
-import { SessionNode } from '../nodes/SessionNode';
+import { ViewportCtx } from '../nodes/common';
+import { NodeView } from '../nodes/NodeView';
 import { hub, setExpanded, ui, useHub, useUI } from '../store';
 import { CLOUD_NAMES, computeColor, computeKey, isActive, useIsPhone } from '../ui';
-import { applySaved, autoLayout, bbox, buildGraph, clipSeg, type Box } from './layout';
+import { applySaved, autoLayout, bbox, buildGraph, clipSeg, type Box, type GNode } from './layout';
 import { centerOn, clampZ, fitBox, useView, view, zoomAt } from './view';
 
 const GRID = 22;
 
-function nodeText(id: string): string {
+function nodeText(n: GNode): string {
   const h = hub.get();
-  const s = h.sessions[id];
-  if (s) return [s.title, s.branch, s.vendor, s.kind, h.hosts[s.host_id || '']?.label, h.accounts[s.account_id]?.label, s.status, s.kind === 'cloud' ? CLOUD_NAMES[computeKey(s)] : ''].join(' ');
-  const c = h.checkouts[id];
-  if (c) return [c.repoName, c.branch, c.path, h.hosts[c.host_id]?.label, c.head_subject].join(' ');
-  const n = h.nodes[id];
-  if (n) return [n.title, n.appId, n.dir, h.hosts[n.hostId]?.label].join(' ');
-  return '';
+  const id = n.ref;
+  switch (n.kind) {
+    case 'session': { const s = h.sessions[id]; return s ? [s.title, s.branch, s.vendor, s.kind, h.hosts[s.host_id || '']?.label, h.accounts[s.account_id]?.label, s.status, s.kind === 'cloud' ? CLOUD_NAMES[computeKey(s)] : ''].join(' ') : ''; }
+    case 'checkout': { const c = h.checkouts[id]; return c ? [c.repoName, c.branch, c.path, h.hosts[c.host_id]?.label, c.head_subject].join(' ') : ''; }
+    case 'app': { const a = h.nodes[id]; return a ? [a.title, a.appId, a.dir, h.hosts[a.hostId]?.label].join(' ') : ''; }
+    case 'project': { const p = h.projects[id]; return p ? [p.name, p.gh?.owner, p.gh?.account, p.defaultBranch, 'project repo'].join(' ') : ''; }
+    case 'branch': { const b = h.branches[id]; return b ? [b.name, b.goal, b.base, b.pr ? `#${b.pr.number} ${b.pr.title}` : '', 'branch'].join(' ') : ''; }
+    case 'machine': { const m = h.machines[id]; return m ? [m.label, m.kind, 'machine compute', m.gpu.map((g) => g.name).join(' ')].join(' ') : ''; }
+    case 'device': { const d = h.devices[id]; return d ? [d.title, d.kind, d.port, d.icon, h.hosts[d.hostId]?.label, 'device'].join(' ') : ''; }
+    case 'hil': { const p = h.hilPlans[id]; return p ? [p.title, p.plan, 'hil test', h.hosts[p.hostId]?.label].join(' ') : ''; }
+    case 'grant': { const g = h.grants[id]; return g ? [g.resources, g.purpose, 'grant compute access'].join(' ') : ''; }
+    case 'agentref': { const s = h.sessions[id]; return s ? s.title : ''; }
+    case 'cluster': return 'compute surfaces cluster';
+    default: {
+      const c = h.cnodes[id];
+      if (!c) return '';
+      const d = c.data || {};
+      const todo = c.type === 'htodo' ? h.todos[d.todoId]?.text : '';
+      return [c.type, d.title, d.text, d.path, d.prompt, d.rationale, todo].filter(Boolean).join(' ');
+    }
+  }
 }
 
 export function Canvas() {
@@ -28,6 +41,14 @@ export function Canvas() {
   const sessions = useHub((h) => h.sessions);
   const nodes = useHub((h) => h.nodes);
   const approvals = useHub((h) => h.approvals);
+  const projects = useHub((h) => h.projects);
+  const branches = useHub((h) => h.branches);
+  const machines = useHub((h) => h.machines);
+  const devices = useHub((h) => h.devices);
+  const cnodes = useHub((h) => h.cnodes);
+  const todos = useHub((h) => h.todos);
+  const grants = useHub((h) => h.grants);
+  const hilPlans = useHub((h) => h.hilPlans);
   const saved = useHub((h) => h.layout);
   const ready = useHub((h) => h.ready);
   const mode = useUI((u) => u.layoutMode);
@@ -47,8 +68,11 @@ export function Canvas() {
     return a;
   }, [approvals]);
 
-  const G = useMemo(() => buildGraph({ hosts, checkouts, sessions, nodes, expanded, phone, attention }), [hosts, checkouts, sessions, nodes, expanded, phone, attention]);
-  const auto = useMemo(() => autoLayout(mode === 'cluster' ? 'cluster' : 'columns', { hosts, checkouts, sessions, nodes, expanded, phone, attention }, G), [mode, G, hosts, checkouts, sessions, nodes, expanded, phone, attention]);
+  // machines tick often: only their membership matters for the graph
+  const machineKeys = useMemo(() => Object.values(machines).map((m) => `${m.id}|${m.kind}|${m.label}|${m.color}`).join(','), [machines]);
+  const G = useMemo(() => buildGraph({ hosts, checkouts, sessions, nodes, projects, branches, machines: hub.get().machines, devices, cnodes, todos, grants, hilPlans, expanded, phone, attention }),
+    [hosts, checkouts, sessions, nodes, projects, branches, machineKeys, devices, cnodes, todos, grants, hilPlans, expanded, phone, attention]); // eslint-disable-line react-hooks/exhaustive-deps
+  const auto = useMemo(() => autoLayout(mode === 'cluster' ? 'cluster' : 'columns', G), [mode, G]);
 
   const [local, setLocal] = useState<Record<string, { x: number; y: number }>>({});
   const [drag, setDrag] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -103,10 +127,14 @@ export function Canvas() {
     } else fitBox(b, 60, 1, false);
   }, [ready, pos, phone]);
 
-  // pan to a requested node
+  // pan to a requested node (raw ids of machines/devices/plans/grants resolve to their canvas node)
   useEffect(() => {
     if (!panTo) return;
-    const t = setTimeout(() => { const b = posRef.current[panTo.id]; if (b) centerOn(b, phone ? 0.5 : 0.8); }, 30);
+    const t = setTimeout(() => {
+      const id = ['', 'm:', 'dev:', 'hil:', 'grant:'].map((p) => p + panTo.id).find((k) => posRef.current[k]);
+      const b = id ? posRef.current[id] : null;
+      if (b) centerOn(b, phone ? 0.5 : 0.8);
+    }, 30);
     return () => clearTimeout(t);
   }, [panTo, phone]);
 
@@ -220,18 +248,15 @@ export function Canvas() {
 
   // ---- opacity from search / compute filter
   const q = search.trim().toLowerCase();
-  const opacityOf = useCallback((id: string, kind: string) => {
+  const opacityOf = useCallback((n: GNode) => {
     let o = 1;
-    if (q && !nodeText(id).toLowerCase().includes(q)) o = 0.15;
+    if (q && !nodeText(n).toLowerCase().includes(q)) o = 0.15;
     if (filter) {
-      let key = '';
-      if (kind === 'session') key = computeKey(sessions[id]);
-      else if (kind === 'checkout') key = checkouts[id]?.host_id;
-      else key = nodes[id]?.hostId;
-      if (key !== filter) o = Math.min(o, 0.18);
+      if (!n.compute) o = Math.min(o, 0.45);
+      else if (n.compute !== filter) o = Math.min(o, 0.18);
     }
     return o;
-  }, [q, filter, sessions, checkouts, nodes]);
+  }, [q, filter, cnodes, todos]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sessionCount = useMemo(() => {
     const c: Record<string, number> = {};
@@ -252,7 +277,7 @@ export function Canvas() {
         onPointerMove={onMove}
         onPointerUp={end}
         onPointerCancel={end}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => { e.preventDefault(); ui.set({ addMenu: { x: e.clientX, y: e.clientY, parentId: null } }); }}
       >
         <div ref={worldRef} className="world" style={{ pointerEvents: panning || drag ? 'none' : undefined }}>
           <svg width="1" height="1" style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none' }}>
@@ -262,7 +287,8 @@ export function Canvas() {
               const s = clipSeg(a, b);
               if (!s) return null;
               const fa = G.byId[ed.from], fb = G.byId[ed.to];
-              const o = Math.min(opacityOf(ed.from, fa.kind), opacityOf(ed.to, fb.kind)) * (ed.op ?? 1);
+              if (!fa || !fb) return null;
+              const o = Math.min(opacityOf(fa), opacityOf(fb)) * (ed.op ?? 1);
               return <line key={`${ed.from}-${ed.to}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={ed.color} strokeWidth={1.5} strokeDasharray={ed.dash} opacity={o} />;
             })}
           </svg>
@@ -277,7 +303,7 @@ export function Canvas() {
             const p = pos[n.id];
             if (!p) return null;
             const ex = !!expanded[n.id];
-            const s = n.kind === 'session' ? sessions[n.id] : null;
+            const s = n.kind === 'session' ? sessions[n.ref] : null;
             const color = s ? computeColor(computeKey(s), hosts) : '';
             const loud = !!s && (s.status === 'waiting' || attention[s.id]);
             const running = !!s && !loud && s.status === 'running';
@@ -288,24 +314,23 @@ export function Canvas() {
                 className={`node${dragging ? ' dragging' : ''}`}
                 data-node={n.kind}
                 style={{
-                  left: p.x, top: p.y, width: p.w, height: p.h, opacity: opacityOf(n.id, n.kind),
-                  zIndex: dragging ? 50 : ex && n.kind === 'session' ? 20 : loud ? 5 : 1, cursor: dragging ? 'grabbing' : 'grab',
+                  left: p.x, top: p.y, width: p.w, height: p.h, opacity: opacityOf(n),
+                  zIndex: dragging ? 50 : ex && !phone ? 20 : loud ? 5 : 1, cursor: dragging ? 'grabbing' : 'grab',
                   transition: dragging ? 'none' : 'left .3s ease, top .3s ease, opacity .2s',
                 }}
                 onPointerDown={(e) => { e.stopPropagation(); begin(e, 'node', n.id); }}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); ui.set({ addMenu: { x: e.clientX, y: e.clientY, parentId: n.id, kind: n.kind } }); }}
               >
                 {running ? <><span aria-hidden="true" className="halo" style={{ color }} /><span aria-hidden="true" className="ring" style={{ color }} /></> : null}
                 {loud ? <span aria-hidden="true" className="loud" /> : null}
-                {n.kind === 'checkout' ? <CheckoutNode co={checkouts[n.id]} host={hosts[checkouts[n.id].host_id]} sessionCount={sessionCount[n.id] || 0} /> : null}
-                {n.kind === 'session' ? <SessionNode id={n.id} mode={ex && !phone ? 'expanded' : 'collapsed'} /> : null}
-                {n.kind === 'app' ? <AppNode id={n.id} /> : null}
+                <NodeView kind={n.kind} id={n.id} refId={n.ref} mode={ex && !phone ? 'expanded' : 'collapsed'} sessionCount={sessionCount[n.id] || 0} h={{ checkouts, hosts }} />
               </div>
             );
           })}
         </div>
         {ready && !G.nodes.length ? (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-            <div style={{ textAlign: 'center', color: '#8A8F98', fontSize: 13, lineHeight: 1.6 }}>No checkouts or sessions yet.<br />Use <b style={{ color: '#E7E8EA' }}>+ Add</b> to start a session.</div>
+            <div style={{ textAlign: 'center', color: '#8A8F98', fontSize: 13, lineHeight: 1.6 }}>No projects, sessions or nodes yet.<br />Use <b style={{ color: '#E7E8EA' }}>+ Add</b> to start a session or place a node.</div>
           </div>
         ) : null}
       </div>

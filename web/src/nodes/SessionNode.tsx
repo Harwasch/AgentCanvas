@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { setExpanded, setMessages, toast, useHub } from '../store';
 import type { Approval, Message, Session } from '../types';
+import { openTerminal } from './MachineNode';
 import { Icon, ProviderBadge, StatusPill, computeColor, computeKey, computeName, duration, timeAgo } from '../ui';
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
@@ -181,6 +182,8 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
               <span className="dot" style={{ width: 7, height: 7, background: color }} />{computeName(key, hosts)} · {account?.label || s.account_id}
             </span>
             {s.native_url ? <a className="b lnk" style={{ height: 26 }} href={s.native_url} target="_blank" rel="noopener noreferrer" onPointerDown={stop} data-testid="native-link">{nativeLabel(s)} <Icon name="ext" size={11} /></a> : null}
+            {!cloud && s.host_id ? <button className="b" style={{ height: 26 }} onPointerDown={stop} data-testid="session-shell" title="Open a shell in this session's working directory"
+              onClick={() => openTerminal(s.host_id!, { parentId: s.id, cwd: s.cwd, sessionId: s.id })}><span className="mono" style={{ fontSize: 10.5 }}>&gt;_</span>Shell here</button> : null}
             {!cloud ? <button className="b" style={{ height: 26 }} onPointerDown={stop} onClick={interrupt} data-testid="chat-interrupt">Interrupt</button> : null}
             <button className="b desk-only" style={{ height: 26 }} onPointerDown={stop} onClick={stopSession} disabled={s.status === 'ended'}>Stop</button>
           </>
@@ -218,6 +221,7 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
               <span style={{ position: 'absolute', inset: 0, width: running ? '40%' : s.status === 'ended' ? '100%' : '0%', background: color, borderRadius: 3, animation: running ? 'none' : undefined }} />
             </span>
             {cloud && s.vendor === 'codex' ? <button className="b ghost" style={{ height: 22, fontSize: 11, padding: '0 6px' }} onPointerDown={stop} disabled={busy} onClick={fetchDiff}>Diff</button> : null}
+            {!cloud && s.host_id ? <button className="b ghost" style={{ height: 22, fontSize: 11, padding: '0 6px' }} onPointerDown={stop} data-testid="session-shell" title="Shell here" onClick={() => openTerminal(s.host_id!, { parentId: s.id, cwd: s.cwd, sessionId: s.id })}><span className="mono">&gt;_</span>Shell</button> : null}
             {s.native_url ? <a className="b ghost lnk" style={{ height: 22, fontSize: 11, padding: '0 6px' }} href={s.native_url} target="_blank" rel="noopener noreferrer" onPointerDown={stop}>{nativeLabel(s)} ↗</a> : <span style={{ fontSize: 11, color: '#6E727A' }}>{timeAgo(s.updated_at)}</span>}
           </div>
         )
@@ -288,14 +292,17 @@ export const SessionNode = memo(SessionNodeImpl);
 export function useSessionAttention() {
   const sessions = useHub((h) => h.sessions);
   const approvals = useHub((h) => h.approvals);
+  const cnodes = useHub((h) => h.cnodes);
+  const grants = useHub((h) => h.grants);
   return useMemo(() => {
-    const list: { sessionId: string; approvalId?: string }[] = [];
+    const list: { id: string; kind: 'session' | 'review' | 'grant'; approvalId?: string }[] = [];
     const seen = new Set<string>();
     Object.values(approvals).filter((a) => a.status === 'pending').sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).forEach((a) => {
-      if (sessions[a.session_id] && !seen.has(a.session_id)) { seen.add(a.session_id); list.push({ sessionId: a.session_id, approvalId: a.id }); }
+      if (sessions[a.session_id] && !seen.has(a.session_id)) { seen.add(a.session_id); list.push({ id: a.session_id, kind: 'session', approvalId: a.id }); }
     });
-    Object.values(sessions).filter((s) => s.status === 'waiting' && !seen.has(s.id)).forEach((s) => { seen.add(s.id); list.push({ sessionId: s.id }); });
+    Object.values(sessions).filter((s) => s.status === 'waiting' && !seen.has(s.id)).forEach((s) => { seen.add(s.id); list.push({ id: s.id, kind: 'session' }); });
+    Object.values(cnodes).filter((c) => c.type === 'review' && c.data?.status === 'pending').forEach((c) => list.push({ id: c.id, kind: 'review' }));
+    Object.values(grants).filter((g) => g.status === 'requested').forEach((g) => list.push({ id: g.id, kind: 'grant' }));
     return list;
-  }, [sessions, approvals]);
+  }, [sessions, approvals, cnodes, grants]);
 }
-

@@ -89,6 +89,8 @@ export interface HubConfig {
   cloudPollIntervalSec: number;
   githubPollIntervalSec: number;
   metricsIntervalSec: number;
+  /** how often the hub asks tmux whether each live Claude session still exists (catches /exit and crashes) */
+  claudeLivenessIntervalSec: number;
   /** auto-answer dev-channel warning / one-time Remote Control prompt in tmux */
   autoAnswerStartupPrompts: boolean;
   /** serve plain HTTP on a non-loopback address with a non-https publicUrl (tokens and cookies in clear text) */
@@ -130,6 +132,7 @@ const DEFAULTS: HubConfig = {
   cloudPollIntervalSec: 15,
   githubPollIntervalSec: 60,
   metricsIntervalSec: 10,
+  claudeLivenessIntervalSec: 60,
   autoAnswerStartupPrompts: true,
 };
 

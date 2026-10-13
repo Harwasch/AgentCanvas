@@ -31,6 +31,7 @@ export interface ExecResult {
 export class HostManager {
   private controlDir: string;
   private health = new Map<string, NodeJS.Timeout>();
+  private onlineFns: ((hostId: string) => void)[] = [];
   constructor(private cfg: HubConfig, private db: Db, private bus: EventBus) {
     this.controlDir = expandHome(cfg.ssh.controlDir || path.join(cfg.dataDir, 'ssh-ctl'));
     fs.mkdirSync(this.controlDir, { recursive: true, mode: 0o700 });
@@ -158,7 +159,22 @@ export class HostManager {
     this.db.run('UPDATE host SET status=?, last_seen=?, info=? WHERE id=?', ok ? 'online' : 'offline', ok ? Date.now() : prev?.last_seen ?? null, JSON.stringify(info), hostId);
     this.bus.publish('host.upsert', this.row(hostId));
     if (!ok) L(`host ${hostId} offline: ${info.error}`);
+    if (ok && prev?.status === 'offline') {
+      L(`host ${hostId} back online`);
+      for (const f of this.onlineFns) {
+        try {
+          f(hostId);
+        } catch (e: any) {
+          L(`online handler ${hostId}: ${e.message}`);
+        }
+      }
+    }
     return ok;
+  }
+
+  /** Called when a host that was offline answers a health check again (sessions there are recovered). */
+  onOnline(f: (hostId: string) => void) {
+    this.onlineFns.push(f);
   }
 
   row(hostId: string) {

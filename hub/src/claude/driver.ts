@@ -10,7 +10,7 @@ import { NdjsonDecoder, ndjson } from '../jsonrpc.js';
 import { parseChannelLine, channelMessage, channelPermission, parseTranscriptLine, permissionDecision, writtenPaths, type HookEvent } from './payloads.js';
 import { newId, type Session } from '../store.js';
 import { log } from '../events.js';
-import { json, type Res } from '../http.js';
+import { json, HELD, type Res } from '../http.js';
 import { sessionToken } from '../tokens.js';
 
 const L = log('claude');
@@ -24,10 +24,25 @@ interface Live {
   relayBackoff: number;
 }
 
+/** tmux's own answer for one session; 'unknown' when the host could not be asked (ssh failed, tmux missing). */
+export type TmuxState = 'alive' | 'gone' | 'unknown';
+
+/** Parse `<name> <has-session exit code>` lines: 0 = alive, 1 = tmux says no such session; a missing line = unknown. */
+export function parseTmuxStates(names: string[], stdout: string): Map<string, TmuxState> {
+  const rc = new Map<string, number>();
+  for (const line of stdout.split('\n')) {
+    const m = line.trim().match(/^(\S+) (\d+)$/);
+    if (m) rc.set(m[1], Number(m[2]));
+  }
+  return new Map(names.map((n) => [n, rc.get(n) === 0 ? 'alive' : rc.get(n) === 1 ? 'gone' : 'unknown']));
+}
+
 export class ClaudeDriver {
   private live = new Map<string, Live>();
   /** held PermissionRequest hook responses (fallback when no channel) */
   private held = new Map<string, { res: Res; timer: NodeJS.Timeout }>();
+  private checkTimers = new Map<string, NodeJS.Timeout>();
+  private liveness?: NodeJS.Timeout;
   constructor(private c: Ctx) {}
 
   private configDir(accountId: string) {
@@ -125,15 +140,17 @@ export class ClaudeDriver {
     if (!l) {
       l = { relayUp: false, closed: false, relayBackoff: 500 };
       this.live.set(id, l);
+      // a row from a previous hub run may still say connected; it is connected again when the relay says hello
+      if (this.c.store.session(id)?.meta.channel === 'connected') this.c.store.upsertSession({ id, meta: { channel: 'disconnected' } });
     }
     this.connectRelay(id);
     this.startTail(id);
   }
 
   private connectRelay(id: string) {
-    const l = this.live.get(id)!;
+    const l = this.live.get(id);
     const s = this.c.store.session(id);
-    if (!s || l.closed || l.relay) return;
+    if (!l || !s || l.closed || l.relay) return;
     const p = this.c.hosts.spawn(s.host_id!, `${q(this.c.hosts.bin(s.host_id!, 'python'))} "$HOME/.agent-hub/hub_channel.py" relay ${q(id)}`);
     l.relay = p;
     const dec = new NdjsonDecoder((m) => this.onChannel(id, m), (line) => L(`${id}: bad channel line ${line.slice(0, 80)}`));
@@ -145,14 +162,18 @@ export class ClaudeDriver {
         l.relayUp = false;
         this.c.store.upsertSession({ id, meta: { channel: 'disconnected' } });
       }
-      if (!l.closed) setTimeout(() => this.connectRelay(id), (l.relayBackoff = Math.min(l.relayBackoff * 2, 15000)));
+      if (l.closed) return;
+      // the channel server dies with claude (/exit, crash): ask tmux soon instead of waiting for the periodic check
+      this.checkSoon(s.host_id!);
+      setTimeout(() => this.connectRelay(id), (l.relayBackoff = Math.min(l.relayBackoff * 2, 15000)));
     });
   }
 
   private onChannel(id: string, raw: unknown) {
     const r = parseChannelLine(raw);
     if (!r.ok) return L(`${id}: channel: ${r.error}`);
-    const l = this.live.get(id)!;
+    const l = this.live.get(id);
+    if (!l) return;
     const m = r.msg;
     if (m.type === 'hello') {
       l.relayUp = true;
@@ -169,9 +190,9 @@ export class ClaudeDriver {
   }
 
   private startTail(id: string) {
-    const l = this.live.get(id)!;
+    const l = this.live.get(id);
     const s = this.c.store.session(id);
-    if (!s || l.closed || l.tail) return;
+    if (!l || !s || l.closed || l.tail) return;
     const t = s.meta.transcript as string;
     const p = this.c.hosts.spawn(s.host_id!, `tail -n +1 -F -- ${q(t)} 2>/dev/null`);
     l.tail = p;
@@ -245,23 +266,91 @@ export class ClaudeDriver {
   async stop(id: string) {
     const s = this.need(id);
     const l = this.live.get(id);
+    if (l) l.closed = true; // no relay reconnects while tmux goes away
+    await this.c.hosts.exec(s.host_id!, `${this.tmuxBin(s.host_id!)} kill-session -t ${q(s.meta.tmux)}`);
+    this.end(id, 'stopped from hub');
+  }
+
+  /**
+   * Reattach to sessions whose tmux is alive and end the ones tmux says are gone. Runs on hub start, when a host
+   * comes back online, and on a timer. A host that cannot be asked (ssh down) leaves its sessions as they are.
+   */
+  async recover(hostId?: string, o: { startup?: boolean } = {}) {
+    const all = this.c.store.sessions("vendor='claude' AND kind='local' AND status NOT IN ('ended','error')").filter((s) => s.host_id && (!hostId || s.host_id === hostId));
+    const byHost = new Map<string, Session[]>();
+    for (const s of all) byHost.set(s.host_id!, [...(byHost.get(s.host_id!) || []), s]);
+    await Promise.all([...byHost].map(async ([h, list]) => {
+      const states = await this.tmuxStates(h, list.map((s) => s.meta.tmux));
+      for (const s of list) {
+        const st = states.get(s.meta.tmux);
+        if (st === 'gone') this.end(s.id, 'claude exited (tmux session gone)');
+        else if (st === 'alive') {
+          if (s.meta.hostOffline) this.c.store.upsertSession({ id: s.id, last_event: 'host back online', meta: { hostOffline: false } });
+          const l = this.live.get(s.id);
+          if (!l || l.closed) {
+            if (l) this.live.delete(s.id);
+            this.attach(s.id);
+          }
+        } else if (o.startup || !s.meta.hostOffline) {
+          // unreachable: keep the session; retried when the host comes back online
+          if (!s.meta.hostOffline) L(`${s.id}: ${h} unreachable; keeping the session until the host is back`);
+          this.c.store.upsertSession({ id: s.id, last_event: 'host offline', meta: { hostOffline: true } });
+        }
+      }
+    }));
+  }
+
+  /** One ssh exec per host: `tmux has-session` for each name, with its exit code. */
+  async tmuxStates(hostId: string, names: string[]): Promise<Map<string, TmuxState>> {
+    if (!names.length) return new Map();
+    const tm = this.tmuxBin(hostId);
+    const r = await this.c.hosts.exec(hostId, `for s in ${names.map(q).join(' ')}; do ${tm} has-session -t "$s" 2>/dev/null; echo "$s $?"; done`, { timeoutMs: 15000 }).catch(() => ({ code: -1, stdout: '', stderr: '' }));
+    return parseTmuxStates(names, r.stdout);
+  }
+
+  /** Periodic liveness check (claudeLivenessIntervalSec): sessions that exit on their own (/exit, crash) fire no hook we can rely on. */
+  startLiveness() {
+    const sec = Math.max(1, this.c.cfg.claudeLivenessIntervalSec || 60);
+    this.liveness = setInterval(() => {
+      const hosts = new Set([...this.live.entries()].filter(([, l]) => !l.closed).map(([id]) => this.c.store.session(id)?.host_id).filter(Boolean) as string[]);
+      for (const h of hosts) if ((this.c.hosts.row(h) as any)?.status !== 'offline') this.recover(h).catch((e) => L(`liveness ${h}: ${e.message}`));
+    }, sec * 1000);
+  }
+  stopLiveness() {
+    if (this.liveness) clearInterval(this.liveness);
+  }
+
+  /** debounced recover(host) after a relay dropped */
+  private checkSoon(hostId: string) {
+    clearTimeout(this.checkTimers.get(hostId));
+    this.checkTimers.set(hostId, setTimeout(() => {
+      this.checkTimers.delete(hostId);
+      this.recover(hostId).catch((e) => L(`check ${hostId}: ${e.message}`));
+    }, 1500));
+  }
+
+  /** The session is really over: close its links, forget it, and mark it ended (its device locks are released on that event). */
+  private end(id: string, why: string) {
+    const l = this.live.get(id);
     if (l) {
       l.closed = true;
       l.relay?.kill();
       l.tail?.kill();
     }
-    await this.c.hosts.exec(s.host_id!, `${this.tmuxBin(s.host_id!)} kill-session -t ${q(s.meta.tmux)}`);
-    this.c.store.setStatus(id, 'ended', 'stopped from hub');
+    this.live.delete(id);
+    L(`${id}: ${why}`);
+    this.c.store.setStatus(id, 'ended', why);
     this.expireApprovals(id);
   }
 
-  /** On hub restart: reattach to sessions whose tmux is still alive. */
-  async recover() {
-    for (const s of this.c.store.sessions("vendor='claude' AND kind='local' AND status NOT IN ('ended','error')")) {
-      const r = await this.c.hosts.exec(s.host_id!, `${this.tmuxBin(s.host_id!)} has-session -t ${q(s.meta.tmux)}`).catch(() => ({ code: 1 }));
-      if (r.code === 0) this.attach(s.id);
-      else this.c.store.setStatus(s.id, 'ended', 'tmux session gone');
-    }
+  /** a held PermissionRequest hook response is still open for this approval */
+  holding(approvalId: string) {
+    return this.held.has(approvalId);
+  }
+  /** channel approvals can be answered only while the relay is up */
+  channelUp(sessionId: string) {
+    const l = this.live.get(sessionId);
+    return !!(l?.relayUp && l.relay?.stdin?.writable);
   }
 
   async decide(approvalId: string, decision: 'allow' | 'deny') {
@@ -273,11 +362,10 @@ export class ClaudeDriver {
       l.relay.stdin.write(ndjson(channelPermission(a.data.requestId, decision)));
     } else if (a.source === 'claude-hook') {
       const h = this.held.get(approvalId);
-      if (h) {
-        clearTimeout(h.timer);
-        this.held.delete(approvalId);
-        json(h.res, 200, permissionDecision(decision));
-      }
+      if (!h) throw new Error('no longer waiting');
+      clearTimeout(h.timer);
+      this.held.delete(approvalId);
+      json(h.res, 200, permissionDecision(decision));
     }
     this.c.store.upsertApproval({ id: approvalId, status: decision, decided_by: 'hub' });
     this.c.store.setStatus(a.session_id, 'running', `approval ${decision}`);
@@ -303,8 +391,8 @@ export class ClaudeDriver {
   }
 
   // ------------------------------------------------------------- hooks
-  /** Returns true if the response was taken over (held). */
-  onHook(h: HookEvent, res: Res): boolean {
+  /** Returns HELD if the response was taken over (answered later by decide() or the timeout). */
+  onHook(h: HookEvent, res: Res): typeof HELD | false {
     const s = this.c.store.sessionByNative(h.sessionId);
     if (!s) {
       L(`hook ${h.event} for unknown session ${h.sessionId}`);
@@ -335,7 +423,14 @@ export class ClaudeDriver {
           json(res, 200, {}); // no decision: the terminal dialog shows
         }, 120_000);
         this.held.set(aid, { res, timer });
-        return true;
+        // Claude gave up on the hook (its timeout, or it exited): nobody is waiting for this answer any more
+        res.once('close', () => {
+          if (res.writableFinished || !this.held.has(aid)) return;
+          clearTimeout(timer);
+          this.held.delete(aid);
+          this.c.store.upsertApproval({ id: aid, status: 'expired' });
+        });
+        return HELD;
       }
       case 'PostToolUse':
       case 'PostToolUseFailure':
@@ -352,7 +447,7 @@ export class ClaudeDriver {
       case 'Notification':
         break;
       case 'SessionEnd':
-        this.c.store.setStatus(id, 'ended', 'session ended');
+        this.end(id, 'session ended');
         break;
     }
     return false;

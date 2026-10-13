@@ -178,5 +178,6 @@
   "repoIndexIntervalSec": 60,
   "cloudPollIntervalSec": 30,
   "githubPollIntervalSec": 60,
-  "metricsIntervalSec": 10
+  "metricsIntervalSec": 10,
+  "claudeLivenessIntervalSec": 60
 }

@@ -20,6 +20,8 @@ import type { TerminalService } from './terminal.js';
 import type { CanvasService } from './canvas.js';
 
 export interface Ctx {
+  /** changes on every hub start: the event seq restarts at 0, so clients resync */
+  bootId: string;
   cfg: HubConfig;
   secrets: Secrets;
   db: Db;

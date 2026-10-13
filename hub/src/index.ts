@@ -6,7 +6,7 @@ import { WebSocketServer } from 'ws';
 import { loadConfig, loadSecrets } from './config.js';
 import { Db } from './db.js';
 import { EventBus, log } from './events.js';
-import { Store } from './store.js';
+import { Store, newId } from './store.js';
 import { HostManager } from './ssh.js';
 import { Bootstrapper } from './bootstrap.js';
 import { ClaudeDriver } from './claude/driver.js';
@@ -37,7 +37,7 @@ export async function main() {
   const bus = new EventBus();
   const store = new Store(db, bus);
   const hosts = new HostManager(cfg, db, bus);
-  const c = { cfg, secrets, db, bus, store, hosts } as Ctx;
+  const c = { bootId: newId('boot-'), cfg, secrets, db, bus, store, hosts } as Ctx;
   c.account = (id: string) => {
     const a = cfg.accounts.find((x) => x.id === id);
     if (!a) throw new Error(`unknown account ${id}`);
@@ -58,10 +58,13 @@ export async function main() {
   c.hil = new HilService(c);
   c.terminals = new TerminalService(c);
   c.canvas = new CanvasService(c);
-  // a session that ends gives back its device locks
+  // a session that ends gives back its device locks (only real ends: a session on an unreachable host is kept, not ended)
   bus.on('event', (ev: any) => {
     if (ev.type === 'session.upsert' && ev.data.status === 'ended') c.compute.releaseAll(ev.data.id);
   });
+  // approvals whose waiter lived in the previous process (pending tool calls, held hooks, Codex requests) can never be answered
+  const orphaned = store.expireOrphanedApprovals();
+  if (orphaned.length) L(`expired ${orphaned.length} approval(s) left pending by the previous run`);
 
   const authCheck = (auth: Auth, req: Req) => {
     if (auth === 'none') return true;
@@ -126,11 +129,25 @@ export async function main() {
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const since = Number(u.searchParams.get('since') || 0);
+      const boot = u.searchParams.get('boot');
       ws.on('error', (e) => L(`events socket: ${e.message}`));
-      for (const ev of bus.since(since)) ws.send(JSON.stringify(ev));
+      // hello first: a client from another hub run (seq restarted) or one that fell out of the replay ring must resync
+      const missed = bus.since(since);
+      const gap = (!!boot && boot !== c.bootId) || since > bus.seq || (since > 0 && since < bus.seq && (!missed.length || missed[0].seq > since + 1));
+      ws.send(JSON.stringify({ seq: 0, type: 'hello', data: { boot: c.bootId, seq: bus.seq, resync: gap }, ts: Date.now() }));
+      if (!gap) for (const ev of missed) ws.send(JSON.stringify(ev));
       const on = (ev: any) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(ev));
       bus.on('event', on);
-      const ping = setInterval(() => ws.readyState === ws.OPEN && ws.ping(), 25000);
+      // keepalive: a text frame the PWA can see (it treats silence as a dead socket) plus a ping; no pong for a round → drop
+      let alive = true;
+      ws.on('pong', () => (alive = true));
+      const ping = setInterval(() => {
+        if (ws.readyState !== ws.OPEN) return;
+        if (!alive) return ws.terminate();
+        alive = false;
+        ws.ping();
+        ws.send(JSON.stringify({ seq: 0, type: 'keepalive', data: {}, ts: Date.now() }));
+      }, 25000);
       ws.on('close', () => {
         bus.off('event', on);
         clearInterval(ping);
@@ -152,8 +169,14 @@ export async function main() {
   c.projects.start();
   c.compute.start();
   c.nodes.start();
-  c.claude.recover().catch((e) => L(`claude recover: ${e.message}`));
+  c.claude.recover(undefined, { startup: true }).catch((e) => L(`claude recover: ${e.message}`));
   c.codex.recover().catch((e) => L(`codex recover: ${e.message}`));
+  c.claude.startLiveness();
+  // a host that was unreachable is back: reattach its sessions (nothing was ended while it was away)
+  hosts.onOnline((h) => {
+    c.claude.recover(h).catch((e) => L(`claude recover ${h}: ${e.message}`));
+    c.codex.recover(h).catch((e) => L(`codex recover ${h}: ${e.message}`));
+  });
 
   const shutdown = async () => {
     L('shutting down');
@@ -162,6 +185,7 @@ export async function main() {
     c.projects.stop();
     c.compute.stop();
     c.nodes.stop();
+    c.claude.stopLiveness();
     await c.apps.stop();
     hosts.stop();
     server.close();

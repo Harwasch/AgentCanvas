@@ -1,0 +1,41 @@
+# Decisions and conflicts (one line each)
+
+Precedence: the build prompt > `architecture.md` (behavior) > `AgentCanvas.html` (look and interaction).
+
+- **PWA scope:** the client is a thin PWA: manifest plus a service worker that only caches the app shell and handles web push (prompt override).
+- **App iframe isolation:** apps load from the hub's own host in `sandbox="allow-scripts allow-forms"` without `allow-same-origin` (an opaque origin), with no `app-<id>.hub.<tailnet>` subdomains (prompt override of the doc's "own origin").
+- **MCP Apps sandbox proxy:** the spec requires web hosts to use a separate-origin sandbox proxy. We skip the proxy layer; the opaque-origin sandbox plus a deny-by-default CSP response header provides the same isolation (follows from the override above).
+- **CSP:** the app UI is served at `/api/apps/:id/ui` with the header `default-src 'none'`, inline script/style only, and `connect-src`/`img-src` limited to the origins declared in `app.json`.
+- **Stack:** hub is Node 22 + TypeScript, compiled with `tsc`. SQLite is the built-in `node:sqlite` (no native module). The PWA is React 18 + Vite with no UI library.
+- **SSH:** the system `ssh` binary with ControlMaster/ControlPersist (one multiplexed connection per host). Files are copied with `cat >` over that connection rather than `scp` (same effect, one code path).
+- **Channel transport:** the hub channel MCP server listens on a 0600 unix socket on the host (`~/.agent-hub/run/<hubId>.sock`). The hub reaches it with `hub_channel.py relay <id>` over SSH, so the channel is SSH-only and only the hub can write to it.
+- **Hub tool calls from hosts:** `publish_app` and the other hub tools go from `hub_channel.py` to the hub over HTTPS (`/api/mcp/tools/:tool`, host token), the same path hooks use.
+- **Codex tool-call attribution:** Codex passes no session id to MCP servers, so hub tool calls from Codex are matched to the most recently active Codex session on that host whose cwd contains the caller's cwd.
+- **Host-side runtime:** the channel/MCP script is Python 3 standard library. Python 3 ships on every Linux host and in WSL2, whereas Node may be absent when Claude Code uses the native installer.
+- **Claude launch flags:** hooks come from `--settings ~/.agent-hub/claude-settings.json` and the hub MCP server from `--mcp-config ~/.agent-hub/mcp.json`. The hub never edits the user's `~/.claude.json` or `settings.json`.
+- **Secrets on hosts:** tokens live in `~/.agent-hub/hub.env` (0600), which the tmux command sources, never on the command line. The channel script reads the same file.
+- **PermissionRequest hook:** when the channel is connected the hook returns no decision, so the dialog relays through the channel. When it is down, the hub holds the hook open for up to 120 s and answers from the PWA (the doc's fallback).
+- **Approvals answered elsewhere:** a Claude approval still pending when PostToolUse or Stop arrives is marked `expired` (answered in the terminal or native app). Codex uses `serverRequest/resolved`.
+- **Startup prompts:** the dev-channel warning, the one-time Remote Control prompt and the workspace trust prompt are answered through tmux by regex in `ClaudeAdapter.startupPrompts`. Turn this off with `autoAnswerStartupPrompts: false`.
+- **Claude session identity:** the hub id (`cc-…`) is the tmux session name and the prefix of the Remote Control name (`<hubId> · <repo>`). `--session-id <uuid>` pins the native id, which maps hooks to rows.
+- **Native URLs:** a Claude session's URL is scraped from the tmux pane. Codex local threads have no documented deep link, so the hub shows a hint instead of a URL.
+- **Codex thread import:** on connect the hub calls `thread/list` (default cli+vscode sources) and lists those threads as sessions. It subscribes (`thread/resume`) only when a session is opened or driven.
+- **Codex model/effort:** these are per-turn overrides applied on the next `turn/start`. A message sent mid-turn uses `turn/steer` with `expectedTurnId`.
+- **Cloud CLI location:** cloud CLIs run on the hub under per-account `hub.claudeConfigDir`/`hub.codexHome`, in a scratch clone per repo per account (doc). Clones come from the checkout's remote URL.
+- **Claude cloud environments:** `claude --cloud` uses the account's default environment. Named environments need routines (`/fire`); the config has a `routineId` slot, but firing is not wired in v1 (no API in the VM).
+- **Cloud hooks for sessions started elsewhere:** a cloud hook for an unknown session creates a row, which covers natively started cloud sessions on repos with hub hooks. Its account defaults to the first configured account.
+- **App lifecycle:** `on-demand` servers start on publish, on a tool call or on a UI request, and stop after 15 min idle. `always-on` restarts on crash while the hub runs. True systemd `--user` supervision is not used in v1.
+- **App transport:** `server.transport: "http"` passes validation, but v1 refuses to run it (stdio over SSH only).
+- **`runsOn`:** v1 runs the server where the app files are (the session host) and warns if `runsOn` names another host.
+- **Static apps:** an app without a server needs `uiFile` (relative HTML path). It is a manifest addition, because a UI-only app has no server to serve `ui://`.
+- **Undeclared tools:** a server tool missing from `app.json` produces a publish warning, and every call to it is refused.
+- **Promotion:** promotion pins `HEAD` and runs the server from a detached `git worktree` at that commit (`~/.agent-hub/pins/…`). Later edits to the working tree create a `<id>-pv` preview node beside the pinned one.
+- **Commit & pin:** if the reviewed app files are uncommitted, Promote can commit exactly those files under the session account's git identity. It is guarded by a review content hash, so nothing can change between review and pin.
+- **Actuate grant:** the grant is tied to the node version. Reloading a promoted node restarts the same pinned commit and carries the grant forward; anything else needs a new review.
+- **Agent tool calls:** agents call app tools through an extra hub tool `app_call`, which goes through the same policy. A confirm-tier tool raises a hub approval that a human must answer. The doc lists four hub tools; this is the fifth.
+- **Audit scope:** the audit records every actuate call, every refusal, every agent or app call, and promote/grant events. The node's own read-tier polling from the UI is not recorded, to keep the log readable.
+- **Screenshots:** Playwright on the hub opens the PWA's `/?shot=<id>` mode and screenshots the node as rendered, so the agent sees what the user sees.
+- **Push:** VAPID keys are generated on first start into `secrets.json`. Every push is also sent as a `toast` event on the stream, so open PWAs see it.
+- **Account usage meters:** the design's subscription-usage meters show live session counts per account instead. The hub has no real usage source (`/usage` scraping is out of scope).
+- **Branch:** work is pushed to `claude/hub-v1` as the prompt asks, not to the session's default branch.
+- **Test hosts:** users `hosta` (mini-1) and `hostb` (mini-2) on localhost stand in for the two mini PCs. Stub CLIs live in `/opt/agent-hub-stubs` and are selected purely by `adapters.*.bin` in the config.

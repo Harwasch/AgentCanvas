@@ -1,0 +1,135 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8443
+  },
+  "publicUrl": "https://minipc-a.example-tailnet.ts.net",
+  "hostCallbackUrl": "https://minipc-a.example-tailnet.ts.net",
+  "cloudCallbackUrl": "https://minipc-a.example-tailnet.ts.net",
+  "tls": null,
+  "dataDir": "~/.agent-hub",
+  "adapters": {
+    "claude": {
+      "bin": "claude",
+      "cloudBin": "claude"
+    },
+    "codex": {
+      "bin": "codex",
+      "cloudBin": "codex"
+    }
+  },
+  "ssh": {
+    "bin": "ssh",
+    "identityFile": "~/.agent-hub/ssh/id_ed25519"
+  },
+  "hosts": [
+    {
+      "id": "mini-1",
+      "label": "mini-1",
+      "target": "hub@minipc-a",
+      "color": "#43D1B0",
+      "roots": [
+        "~/code"
+      ]
+    },
+    {
+      "id": "mini-2",
+      "label": "mini-2",
+      "target": "hub@minipc-b",
+      "color": "#A6E15A",
+      "roots": [
+        "~/code"
+      ]
+    },
+    {
+      "id": "laptop",
+      "label": "laptop (WSL2)",
+      "target": "me@laptop-wsl",
+      "color": "#6AA8FF",
+      "roots": [
+        "~/code"
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "id": "personal",
+      "label": "Personal",
+      "color": "#6AA8FF",
+      "claude": {
+        "configDir": "~/.claude-personal"
+      },
+      "codex": {
+        "home": "~/.codex"
+      },
+      "git": {
+        "name": "Personal",
+        "email": "me@example.com"
+      },
+      "gh": {
+        "hostAlias": "github.com-personal"
+      },
+      "hub": {
+        "claudeConfigDir": "~/.agent-hub/profiles/personal/claude",
+        "codexHome": "~/.agent-hub/profiles/personal/codex",
+        "scratchDir": "~/.agent-hub/profiles/personal/scratch"
+      },
+      "cloud": {
+        "claudeEnvironments": [
+          {
+            "id": "default",
+            "label": "Default"
+          }
+        ],
+        "codexEnvironments": [
+          {
+            "id": "env_hexapod",
+            "label": "hexapod-ci"
+          }
+        ]
+      }
+    },
+    {
+      "id": "work",
+      "label": "Work",
+      "color": "#E0896B",
+      "claude": {
+        "configDir": "~/.claude-work"
+      },
+      "codex": {
+        "home": "~/.codex-work"
+      },
+      "git": {
+        "name": "Work",
+        "email": "me@company.example"
+      },
+      "gh": {
+        "hostAlias": "github.com-work"
+      },
+      "hub": {
+        "claudeConfigDir": "~/.agent-hub/profiles/work/claude",
+        "codexHome": "~/.agent-hub/profiles/work/codex",
+        "scratchDir": "~/.agent-hub/profiles/work/scratch"
+      },
+      "cloud": {
+        "claudeEnvironments": [
+          {
+            "id": "default",
+            "label": "Default"
+          }
+        ],
+        "codexEnvironments": [
+          {
+            "id": "env_work",
+            "label": "work-ci"
+          }
+        ]
+      }
+    }
+  ],
+  "screenshot": {
+    "chromiumPath": ""
+  },
+  "repoIndexIntervalSec": 60,
+  "cloudPollIntervalSec": 30
+}

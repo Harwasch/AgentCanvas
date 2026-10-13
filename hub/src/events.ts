@@ -10,7 +10,7 @@ export interface HubEvent {
 }
 
 export class EventBus extends EventEmitter {
-  private seq = 0;
+  seq = 0;
   private ring: HubEvent[] = [];
   publish(type: string, data: any) {
     const ev: HubEvent = { seq: ++this.seq, type, data, ts: Date.now() };

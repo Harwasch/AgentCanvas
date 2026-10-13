@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS repo (
 );
 CREATE TABLE IF NOT EXISTS checkout (
   id TEXT PRIMARY KEY, host_id TEXT, path TEXT, repo_id TEXT, branch TEXT, head TEXT,
-  head_subject TEXT, upstream TEXT, ahead INTEGER, behind INTEGER, dirty INTEGER,
+  head_subject TEXT, head_time INTEGER, upstream TEXT, ahead INTEGER, behind INTEGER, dirty INTEGER,
   changes TEXT, apps TEXT, updated_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS session (
@@ -89,11 +89,11 @@ function enc(v: any) {
   return v;
 }
 
-export function j<T = any>(v: any, dflt: T): T {
-  if (v == null || v === '') return dflt;
+export function j<T = any>(v: any, dflt: T | null): T {
+  if (v == null || v === "") return dflt as T;
   try {
     return JSON.parse(v);
   } catch {
-    return dflt;
+    return dflt as T;
   }
 }

@@ -1,0 +1,297 @@
+// HTTP routes: PWA API, hook intake (local + cloud), hub MCP tool endpoint.
+import type { Ctx } from './ctx.js';
+import { Router, HttpError, json } from './http.js';
+import { parseHook } from './claude/payloads.js';
+import { cspHeader } from './apps/manifest.js';
+import { AppError } from './apps/service.js';
+import type { Caller } from './apps/policy.js';
+import { log } from './events.js';
+
+const L = log('api');
+
+export function routes(c: Ctx): Router {
+  const r = new Router();
+  const need = (v: any, name: string) => {
+    if (v === undefined || v === null || v === '') throw new HttpError(400, `${name} is required`);
+    return v;
+  };
+  const session = (id: string) => {
+    const s = c.store.session(id);
+    if (!s) throw new HttpError(404, 'unknown session');
+    return s;
+  };
+
+  // ------------------------------------------------------------- state
+  r.get('/api/state', 'hub', () => ({
+    seq: c.bus.seq,
+    hosts: c.cfg.hosts.map((h) => c.hosts.row(h.id)),
+    accounts: c.cfg.accounts.map((a) => ({ id: a.id, label: a.label || a.id, color: a.color || '#8A8F98', cloud: { claudeEnvironments: a.cloud?.claudeEnvironments || [], codexEnvironments: a.cloud?.codexEnvironments || [] } })),
+    checkouts: c.db.all('SELECT * FROM checkout ORDER BY host_id, path').map((x) => c.repos.row(x)),
+    sessions: c.store.sessions(),
+    approvals: c.store.pendingApprovals(),
+    nodes: c.apps.nodes(),
+    layout: Object.fromEntries(c.db.all('SELECT * FROM layout').map((l) => [l.node_id, { x: l.x, y: l.y, w: l.w, h: l.h, collapsed: !!l.collapsed }])),
+    config: { publicUrl: c.cfg.publicUrl, vapidPublicKey: c.push.publicKey },
+  }));
+
+  // ------------------------------------------------------------- sessions
+  r.post('/api/sessions', 'hub', async (req) => {
+    const b = req.body || {};
+    const vendor = need(b.vendor, 'vendor');
+    const accountId = need(b.accountId, 'accountId');
+    c.account(accountId);
+    if (b.where === 'cloud') {
+      const checkoutId = need(b.checkoutId, 'checkoutId');
+      const prompt = need(b.prompt, 'prompt');
+      if (vendor === 'claude') return c.cloud.startClaude({ accountId, checkoutId, branch: b.branch, environment: b.environment, prompt });
+      if (vendor === 'codex') return c.cloud.startCodex({ accountId, checkoutId, branch: b.branch, environment: need(b.environment, 'environment'), prompt, attempts: b.attempts ? Number(b.attempts) : undefined });
+      throw new HttpError(400, 'unknown vendor');
+    }
+    const hostId = need(b.hostId, 'hostId');
+    const co = b.checkoutId ? c.repos.checkout(b.checkoutId) : undefined;
+    const cwd = co?.path ?? need(b.cwd, 'cwd or checkoutId');
+    const o = { hostId, accountId, cwd, checkoutId: co?.id ?? null, branch: co?.branch ?? b.branch ?? null, prompt: b.prompt, model: b.model, effort: b.effort };
+    if (vendor === 'claude') return c.claude.start(o);
+    if (vendor === 'codex') return c.codex.start(o);
+    throw new HttpError(400, 'unknown vendor');
+  });
+  r.get('/api/sessions/:id/messages', 'hub', async (req) => {
+    const s = session(req.params.id);
+    if (s.vendor === 'codex' && s.kind === 'local') await c.codex.attach(s.id).catch((e) => L(`attach ${s.id}: ${e.message}`));
+    return c.store.messages(s.id);
+  });
+  r.post('/api/sessions/:id/send', 'hub', async (req) => {
+    const s = session(req.params.id);
+    const text = need(req.body?.text, 'text');
+    if (s.kind === 'cloud') {
+      if (s.vendor === 'claude') await c.cloud.sendClaude(s.id, text);
+      else throw new HttpError(409, 'Codex cloud tasks cannot be continued outside ChatGPT; open it there');
+    } else if (s.vendor === 'claude') await c.claude.send(s.id, text);
+    else await c.codex.send(s.id, text);
+    return { ok: true };
+  });
+  r.post('/api/sessions/:id/interrupt', 'hub', async (req) => {
+    const s = session(req.params.id);
+    if (s.kind === 'cloud') throw new HttpError(409, 'cloud sessions cannot be interrupted from the hub');
+    if (s.vendor === 'claude') await c.claude.interrupt(s.id);
+    else await c.codex.interrupt(s.id);
+    return { ok: true };
+  });
+  r.post('/api/sessions/:id/settings', 'hub', async (req) => {
+    const s = session(req.params.id);
+    if (s.kind === 'cloud') throw new HttpError(409, 'not supported for cloud sessions');
+    if (s.vendor === 'claude') await c.claude.settings(s.id, req.body || {});
+    else await c.codex.settings(s.id, req.body || {});
+    return c.store.session(s.id);
+  });
+  r.post('/api/sessions/:id/stop', 'hub', async (req) => {
+    const s = session(req.params.id);
+    if (s.kind === 'cloud') c.store.setStatus(s.id, 'ended', 'hidden in hub');
+    else if (s.vendor === 'claude') await c.claude.stop(s.id);
+    else await c.codex.stop(s.id);
+    return { ok: true };
+  });
+  r.post('/api/sessions/:id/refresh', 'hub', async (req) => {
+    const s = session(req.params.id);
+    if (s.kind === 'cloud' && s.vendor === 'codex') await c.cloud.refreshCodex(s.id);
+    if (s.checkout_id) await c.repos.refreshCheckout(s.checkout_id);
+    return c.store.session(s.id);
+  });
+
+  // ------------------------------------------------------------- approvals
+  r.post('/api/approvals/:id', 'hub', async (req) => {
+    const a = c.store.approval(req.params.id);
+    if (!a) throw new HttpError(404, 'unknown approval');
+    if (a.status !== 'pending') throw new HttpError(409, `approval already ${a.status}`);
+    const d = req.body?.decision;
+    if (!['allow', 'deny', 'allowSession'].includes(d)) throw new HttpError(400, 'decision must be allow|deny|allowSession');
+    if (a.source === 'codex') await c.codex.decide(a.id, d);
+    else if (a.source === 'app-confirm') c.apps.decideConfirm(a.id, d === 'deny' ? 'deny' : 'allow');
+    else await c.claude.decide(a.id, d === 'deny' ? 'deny' : 'allow');
+    return c.store.approval(a.id);
+  });
+
+  // ------------------------------------------------------------- repos
+  r.get('/api/checkouts/:id/files', 'hub', (req) => c.repos.files(req.params.id));
+  r.get('/api/checkouts/:id/file', 'hub', (req) => c.repos.file(req.params.id, need(req.query.get('path'), 'path')));
+  r.post('/api/checkouts/:id/refresh', 'hub', async (req) => {
+    await c.repos.refreshCheckout(req.params.id);
+    return c.repos.checkout(req.params.id);
+  });
+
+  // ------------------------------------------------------------- apps
+  const user: Caller = { kind: 'user', id: 'hub-user', label: 'you' };
+  const node = (id: string) => {
+    const n = c.apps.row(id);
+    if (!n) throw new HttpError(404, 'unknown app node');
+    return n;
+  };
+  r.post('/api/apps/publish', 'hub', async (req) => {
+    const b = req.body || {};
+    const res = await c.apps.publish({ hostId: need(b.hostId, 'hostId'), dir: need(b.dir, 'dir'), sessionId: b.sessionId ?? null, caller: user });
+    if (res.errors.length) throw new HttpError(422, res.errors.join('; '));
+    return res.node;
+  });
+  r.post('/api/apps/:id/call', 'hub', async (req, res) => {
+    node(req.params.id);
+    const b = req.body || {};
+    const out = await c.apps.call(req.params.id, need(b.tool, 'tool'), b.arguments ?? {}, user, !!b.confirmed);
+    if (!out.ok) return json(res, 409, { code: out.code, reason: out.reason });
+    return out.result;
+  });
+  r.post('/api/apps/:id/resource', 'hub', async (req) => {
+    node(req.params.id);
+    return c.apps.resource(req.params.id, need(req.body?.uri, 'uri'));
+  });
+  r.get('/api/apps/:id/review', 'hub', (req) => {
+    node(req.params.id);
+    return c.apps.review(req.params.id);
+  });
+  r.post('/api/apps/:id/promote', 'hub', async (req) => {
+    node(req.params.id);
+    try {
+      return await c.apps.promote(req.params.id, { commit: need(req.body?.commit, 'commit'), grantActuate: !!req.body?.grantActuate });
+    } catch (e: any) {
+      throw new HttpError(409, e.message);
+    }
+  });
+  r.post('/api/apps/:id/reload', 'hub', async (req) => {
+    node(req.params.id);
+    const out = await c.apps.reload(req.params.id);
+    if (out.errors.length) throw new HttpError(422, out.errors.join('; '));
+    return out.node;
+  });
+  r.del('/api/apps/:id', 'hub', (req) => {
+    node(req.params.id);
+    c.apps.unpublish(req.params.id);
+    return { ok: true };
+  });
+  r.get('/api/apps/:id/ui', 'hub', (req, res) => {
+    const u = c.apps.ui(req.params.id);
+    if (!u) throw new HttpError(404, 'no UI yet');
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': cspHeader(u.manifest.csp),
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+      'x-frame-options': 'SAMEORIGIN',
+    });
+    res.end(u.html);
+  });
+  r.get('/api/apps/:id/thumbnail.png', 'hub', (req, res) => {
+    const png = c.apps.thumbnail(req.params.id);
+    if (!png) throw new HttpError(404, 'no thumbnail');
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-cache' });
+    res.end(png);
+  });
+  r.get('/api/audit', 'hub', (req) => {
+    const n = req.query.get('node');
+    const rows = n ? c.db.all('SELECT * FROM audit WHERE app_node_id=? ORDER BY id DESC LIMIT 500', n) : c.db.all('SELECT * FROM audit ORDER BY id DESC LIMIT 500');
+    return rows.map((a) => ({ ...a, allowed: !!a.allowed, args: JSON.parse(a.args || '{}') }));
+  });
+
+  // ------------------------------------------------------------- layout, push
+  r.post('/api/layout', 'hub', (req) => {
+    const b = req.body || {};
+    const row = { node_id: need(b.nodeId, 'nodeId'), x: Number(b.x) || 0, y: Number(b.y) || 0, w: b.w ?? null, h: b.h ?? null, collapsed: b.collapsed ? 1 : 0 };
+    c.db.upsert('layout', row, 'node_id');
+    c.bus.publish('layout.upsert', { nodeId: row.node_id, x: row.x, y: row.y, w: row.w, h: row.h, collapsed: !!row.collapsed });
+    return { ok: true };
+  });
+  r.get('/api/push/vapid', 'hub', () => ({ publicKey: c.push.publicKey }));
+  r.post('/api/push/subscribe', 'hub', (req) => {
+    c.push.subscribe(req.body?.subscription);
+    return { ok: true };
+  });
+  r.post('/api/push/test', 'hub', () => {
+    c.push.notify({ title: 'Agent Hub', body: 'Test notification', url: '/' });
+    return { ok: true, subscribers: c.db.get('SELECT COUNT(*) n FROM push_sub')?.n };
+  });
+  r.get('/api/push/log', 'hub', () => c.push.sent);
+
+  // ------------------------------------------------------------- hooks
+  r.post('/hooks/claude', 'hook', (req, res) => {
+    const p = parseHook(req.body);
+    if (!p.ok) return json(res, 400, { error: p.error });
+    const held = c.claude.onHook(p.hook, res);
+    if (!held) return json(res, 200, {});
+  });
+  r.post('/hooks/cloud', 'cloudHook', (req, res) => {
+    const p = parseHook(req.body);
+    if (!p.ok) return json(res, 400, { error: p.error });
+    c.cloud.onCloudHook(p.hook);
+    return json(res, 200, {});
+  });
+
+  // ------------------------------------------------------------- hub MCP tools (from hosts)
+  r.post('/api/mcp/tools/:tool', 'hook', async (req) => {
+    const args = req.body?.arguments || {};
+    const ctx = req.body?.context || {};
+    const tool = req.params.tool;
+    const text = (t: string) => ({ type: 'text', text: t });
+    const err = (t: string) => ({ isError: true, content: [text(t)] });
+    // resolve the calling session: Claude passes HUB_SESSION_ID; Codex calls are matched by host + cwd
+    let s = ctx.hubSessionId ? c.store.session(ctx.hubSessionId) : undefined;
+    if (!s && ctx.hostId) {
+      const cands = c.store.sessions("host_id=? AND kind='local' AND status!='ended'", ctx.hostId).filter((x) => x.vendor === (ctx.vendor || x.vendor));
+      s = cands.filter((x) => x.cwd && ctx.cwd && (ctx.cwd === x.cwd || ctx.cwd.startsWith(x.cwd + '/'))).sort((a, b) => b.updated_at - a.updated_at)[0] ?? cands.sort((a, b) => b.updated_at - a.updated_at)[0];
+    }
+    const hostId = s?.host_id ?? ctx.hostId;
+    const agent: Caller = { kind: 'agent', id: s?.id ?? 'unknown', label: s ? `${s.vendor} ${s.title}` : `agent on ${hostId}` };
+    try {
+      switch (tool) {
+        case 'publish_app': {
+          const p = String(need(args.path, 'path'));
+          const base = s?.cwd ?? ctx.cwd;
+          const dir = p.startsWith('/') ? p : `${base}/${p}`.replace(/\/\.\//g, '/');
+          c.apps.cancelPending(hostId, dir);
+          const out = await c.apps.publish({ hostId, dir, sessionId: s?.id ?? null, title: args.title, caller: agent });
+          if (out.errors.length) return err(`publish_app refused:\n- ${out.errors.join('\n- ')}${out.warnings.length ? `\nwarnings:\n- ${out.warnings.join('\n- ')}` : ''}`);
+          const n = out.node;
+          const lines = [
+            `node ${n.id} (${n.manifest.id} v${n.version}) published · tier: ${n.state === 'promoted' ? 'actuate (pinned)' : 'read-only (preview)'}`,
+            `preview: ${c.cfg.publicUrl.replace(/\/$/, '')}/?focus=${n.id}`,
+            `server: ${n.status}`,
+            out.warnings.length ? `warnings:\n- ${out.warnings.join('\n- ')}` : 'warnings: none',
+            out.consoleErrors.length ? `console errors:\n- ${out.consoleErrors.join('\n- ')}` : 'console errors: none',
+            out.serverLog.length ? `server log (tail):\n${out.serverLog.slice(-5).join('\n')}` : '',
+            n.previewOf ? `note: ${n.previewOf} is promoted; this is a new preview version beside the pinned one. Promotion and actuate grants happen only in the hub, by the user.` : 'Promotion and actuate grants happen only in the hub, by the user.',
+          ].filter(Boolean);
+          const content: any[] = [text(lines.join('\n'))];
+          if (out.screenshot) content.push({ type: 'image', data: out.screenshot.toString('base64'), mimeType: 'image/png' });
+          return { content, structuredContent: { nodeId: n.id, previewUrl: `${c.cfg.publicUrl}/?focus=${n.id}`, tier: n.state === 'promoted' ? 'actuate' : 'read', errors: [], consoleErrors: out.consoleErrors, warnings: out.warnings } };
+        }
+        case 'app_status': {
+          const n = c.apps.resolve(String(need(args.id, 'id')), s?.id);
+          const st = c.apps.status(n.id);
+          return { content: [text(JSON.stringify(st, null, 2))], structuredContent: st };
+        }
+        case 'screenshot_app': {
+          const n = c.apps.resolve(String(need(args.id, 'id')), s?.id);
+          const size = args.width && args.height ? { width: Number(args.width), height: Number(args.height) } : undefined;
+          const shot = await c.apps.screenshot(n.id, size);
+          return { content: [{ type: 'image', data: shot.png.toString('base64'), mimeType: 'image/png' }, text(shot.consoleErrors.length ? `console errors:\n- ${shot.consoleErrors.join('\n- ')}` : 'no console errors')] };
+        }
+        case 'unpublish_app': {
+          const n = c.apps.resolve(String(need(args.id, 'id')), s?.id);
+          if (n.state === 'promoted') return err('promoted apps can only be removed by the user in the hub');
+          c.apps.unpublish(n.id);
+          return { content: [text(`removed ${n.id} and stopped its server`)] };
+        }
+        case 'app_call': {
+          const n = c.apps.resolve(String(need(args.id, 'id')), s?.id);
+          const out = await c.apps.call(n.id, String(need(args.tool, 'tool')), args.arguments ?? {}, agent, false);
+          if (!out.ok) return err(`blocked by hub (${out.code}): ${out.reason}`);
+          return out.result;
+        }
+        default:
+          throw new HttpError(404, `unknown hub tool ${tool}`);
+      }
+    } catch (e: any) {
+      if (e instanceof HttpError && e.status === 404) throw e;
+      return err(e instanceof AppError ? e.errors.join('; ') : String(e.message || e));
+    }
+  });
+
+  return r;
+}

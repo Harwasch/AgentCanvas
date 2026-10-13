@@ -116,7 +116,7 @@ export class HostManager {
     const ok = r.code === 0 && r.stdout.startsWith('ok');
     const info = { latencyMs: Date.now() - t0, uname: r.stdout.split('\n')[1] || '', toolsOk: r.stdout.includes('tools-ok'), error: ok ? undefined : r.stderr.trim().slice(0, 300) };
     const prev = this.db.get('SELECT status FROM host WHERE id=?', hostId);
-    this.db.upsert('host', { id: hostId, status: ok ? 'online' : 'offline', last_seen: ok ? Date.now() : prev?.last_seen ?? null, info });
+    this.db.run('UPDATE host SET status=?, last_seen=?, info=? WHERE id=?', ok ? 'online' : 'offline', ok ? Date.now() : prev?.last_seen ?? null, JSON.stringify(info), hostId);
     this.bus.publish('host.upsert', this.row(hostId));
     if (!ok) L(`host ${hostId} offline: ${info.error}`);
     return ok;

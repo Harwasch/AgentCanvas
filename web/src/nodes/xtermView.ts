@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { openTerminalSocket, type TermSocket } from '../api';
 
 export type TermStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
-export interface XtermHandle { dispose(): string[]; focus(): void }
+export interface XtermHandle { dispose(): string[]; focus(): void; setFontSize(px: number): void }
 
 export function mountXterm(el: HTMLElement, id: string, opts: { onStatus: (s: TermStatus) => void; shouldReconnect: () => boolean; fontSize?: number }): XtermHandle {
   const term = new Terminal({
@@ -62,6 +62,12 @@ export function mountXterm(el: HTMLElement, id: string, opts: { onStatus: (s: Te
 
   return {
     focus: () => term.focus(),
+    // expand / collapse: same terminal and socket, new font size, refit (sends the new cols/rows)
+    setFontSize: (px: number) => {
+      if (disposed || term.options.fontSize === px) return;
+      term.options.fontSize = px;
+      requestAnimationFrame(doFit);
+    },
     dispose: () => {
       disposed = true;
       window.clearTimeout(timer);

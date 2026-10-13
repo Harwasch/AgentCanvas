@@ -16,6 +16,7 @@ function TerminalNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const termEl = useRef<HTMLDivElement>(null);
   const handle = useRef<XtermHandle | null>(null);
+  const fontSize = useRef(mode === 'collapsed' ? 11.5 : 12.5);
   const live = useLive(outerRef, id, mode);
   const closed = node?.data.status === 'closed';
   const [status, setStatus] = useState<TermStatus>('connecting');
@@ -30,7 +31,7 @@ function TerminalNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
       handle.current = m.mountXterm(el, id, {
         onStatus: (s) => { if (alive) setStatus(s); },
         shouldReconnect: () => hub.get().cnodes[id]?.data?.status !== 'closed',
-        fontSize: mode === 'collapsed' ? 11.5 : 12.5,
+        fontSize: fontSize.current,
       });
     }).catch((e) => toast(`Terminal failed to load: ${(e as Error).message}`, 'error'));
     return () => {
@@ -39,7 +40,9 @@ function TerminalNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
       handle.current = null;
       if (h) { const l = h.dispose(); if (l.length) { lastLines.set(id, l); setLines(l); } }
     };
-  }, [live, closed, id, mode]);
+    // mode is not a dependency: expanding or collapsing keeps the terminal and its socket (font size below)
+  }, [live, closed, id]);
+  useEffect(() => { fontSize.current = mode === 'collapsed' ? 11.5 : 12.5; handle.current?.setFontSize(fontSize.current); }, [mode]);
 
   if (!node) return null;
   const d = node.data;

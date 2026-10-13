@@ -63,6 +63,9 @@ function Main() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') { e.preventDefault(); ui.set({ quickOpen: { parentId: null } }); return; }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); ui.set((u) => ({ askBar: !u.askBar })); return; }
       if (e.key !== 'Escape') return;
+      // Escape in a text field (or a terminal) belongs to that field, not to the canvas
+      const t = e.target as HTMLElement | null;
+      if (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable || t.closest?.('.xterm'))) return;
       const u = ui.get();
       if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu || u.askBar) return;
       if (Object.keys(u.expanded).length) ui.set({ expanded: {} });

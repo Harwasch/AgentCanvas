@@ -6,7 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api } from '../api';
 import { ViewportCtx } from '../nodes/common';
 import { NodeView } from '../nodes/NodeView';
-import { hub, setExpanded, toast, ui, useHub, useUI } from '../store';
+import { hub, setExpanded, setLayoutMode, toast, ui, useHub, useUI } from '../store';
 import { CLOUD_NAMES, Icon, computeColor, computeKey, isActive, useIsPhone } from '../ui';
 import { applySaved, autoLayout, bbox, buildGraph, clipSeg, type Box, type GNode, type Graph, type NodeSize } from './layout';
 import { centerOn, clampZ, fitBox, useView, view, zoomAt } from './view';
@@ -88,8 +88,13 @@ export function Canvas() {
   GRef.current = G;
 
   const [local, setLocal] = useState<Record<string, { x: number; y: number }>>({});
-  const [drag, setDrag] = useState<Record<string, { x: number; y: number }> | null>(null);
-  const [resizing, setResizing] = useState<{ id: string; w: number; h: number } | null>(null);
+  // live drag / resize values also sit in refs: end() reads them there, never from a render's (possibly stale) closure
+  const [drag, setDragState] = useState<Record<string, { x: number; y: number }> | null>(null);
+  const [resizing, setResizingState] = useState<{ id: string; w: number; h: number } | null>(null);
+  const dragRef = useRef<Record<string, { x: number; y: number }> | null>(null);
+  const resizingRef = useRef<{ id: string; w: number; h: number } | null>(null);
+  const setDrag = (v: Record<string, { x: number; y: number }> | null) => { dragRef.current = v; setDragState(v); };
+  const setResizing = (v: { id: string; w: number; h: number } | null) => { resizingRef.current = v; setResizingState(v); };
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   useEffect(() => { setLocal({}); }, [mode]);
 
@@ -343,17 +348,21 @@ export function Canvas() {
     const g = gesture.current;
     if (ptrs.current.size > 0) return;
     gesture.current = null;
+    const moved = dragRef.current;
+    const r = resizingRef.current;
+    // always leave the gesture state clean, so .world never stays pointer-events: none
     setPanning(false);
     setMarquee(null);
+    setDrag(null);
+    setResizing(null);
     if (!g) return;
     if (g.kind === 'node') {
-      if (g.moved && drag) {
-        const moved = drag;
+      if (g.moved && moved) {
         setLocal((l) => ({ ...l, ...moved }));
-        setDrag(null);
         saveLayout(moved);
+        // like Claude's moves: a position only sticks in Custom, which starts from the auto layout that is showing
+        if (ui.get().layoutMode !== 'custom') setLayoutMode('custom');
       } else if (!g.moved) {
-        setDrag(null);
         if (g.shift && e.type === 'pointerup') {
           // shift-click toggles the node in the selection
           const sel = { ...ui.get().selected };
@@ -367,8 +376,6 @@ export function Canvas() {
         }
       }
     } else if (g.kind === 'resize') {
-      const r = resizing;
-      setResizing(null);
       const b = posRef.current[g.id];
       if (g.moved && r && b) {
         const key = ui.get().expanded[g.id] && !phone ? 'x' : 'c';
@@ -398,7 +405,7 @@ export function Canvas() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !Object.keys(ui.get().selected).length) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable || t.closest?.('.xterm'))) return;
       ui.set({ selected: {} });
     };
     window.addEventListener('keydown', onKey);

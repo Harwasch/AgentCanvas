@@ -353,6 +353,7 @@ export async function handle(method: string, path: string, body?: any): Promise<
     const s = state.sessions.find((x) => x.id === sid);
     if (!s) return err(404, { error: 'no such session' });
     if (act === 'messages') return ok(clone(state.messages[sid] || []));
+    if (act === 'send' && s.kind === 'cloud' && s.vendor === 'codex') return err(409, { error: 'Codex cloud tasks cannot be continued outside ChatGPT; open it there' });
     if (act === 'send' && s.meta?.role === 'assistant') {
       addMsg(sid, 'user', 'text', String(body.text));
       void assistantTurn(asst, sid, String(body.text));
@@ -385,6 +386,7 @@ export async function handle(method: string, path: string, body?: any): Promise<
   if ((m = p.match(/^\/api\/approvals\/([^/]+)$/)) && method === 'POST') {
     const ap = state.approvals.find((a) => a.id === m![1]);
     if (!ap) return err(404, { error: 'no such approval' });
+    if (ap.status !== 'pending') return err(409, { error: `approval already ${ap.status}` });
     const status = body.decision === 'deny' ? 'deny' : 'allow';
     upd(state.approvals, ap.id, { status }, 'approval.upsert');
     if (ap.source === 'canvas-action') { decideAction(asst, ap, status === 'allow'); return ok(clone(ap)); }

@@ -293,6 +293,9 @@ export function v2Fixtures(checkouts: Checkout[]) {
   const plan: HilPlan = { id: 'mini-1:actuator-vv', title: 'Actuator V&V', hostId: 'mini-1', devices: ['mini-1:stlink', 'mini-1:pcba', 'mini-1:pcan', 'mini-1:canbus'], plan: 'SYS/vv/actuator_test_plan.md', setup: ['mini-1', 'PCAN-USB FD', 'leg CAN bus', 'actuator PCBA', 'ST-LINK (flash)'] };
   const run = makeRun(plan, 'run_142', 's_cc_m1', ago(3 * 60e3));
   for (let i = 0; i < 6; i++) stepRun(run);
+  // the running plan holds its devices (the ST-LINK was already the agent's)
+  const took = plan.devices.filter((id) => { const d = devices.find((x) => x.id === id); if (!d || d.lock) return false; d.lock = { sessionId: run.startedBy, since: Number(run.startedAt) }; return true; });
+  runLocks.set(run.id, took);
   const grants: Grant[] = [
     { id: 'g1', sessionId: 's_cx_m2', hostId: 'mini-2', resources: '1× RTX 4060 · 8 GB', purpose: 'Offload the FEA solver to the GPU', quotaGB: 24, usedGB: 7.4, status: 'active', createdAt: ago(50 * 60e3) },
     { id: 'g2', sessionId: 's_cc_m1', hostId: 'mini-2', resources: 'GPU · 4 GB', purpose: 'Render winch trace benchmarks', quotaGB: 4, usedGB: 0, status: 'requested', createdAt: ago(2 * 60e3) },
@@ -378,6 +381,26 @@ function stepRun(r: HilRun): boolean {
   if (next < 0) { r.status = r.fail ? 'failed' : 'passed'; r.finishedAt = Date.now(); r.log.push('done'); }
   r.log = r.log.slice(-14);
   return r.status === 'running';
+}
+
+// HIL runs hold their plan's device locks, as in the hub: a device locked by someone else refuses the run;
+// the run takes the free ones and gives back only those when it ends.
+const runLocks = new Map<string, string[]>();
+function takeLocks(ctx: V2Ctx, r: HilRun, plan: HilPlan): string | null {
+  const devs = plan.devices.map((id) => ctx.state.devices.find((d) => d.id === id)).filter(Boolean) as Device[];
+  const held = devs.find((d) => d.lock && d.lock.sessionId !== r.startedBy);
+  if (held) return `${held.title} is locked by ${held.lock!.sessionId === 'you' ? 'you' : `session ${held.lock!.sessionId}`}`;
+  const taken = devs.filter((d) => !d.lock);
+  taken.forEach((d) => { d.lock = { sessionId: r.startedBy, since: Date.now() }; d.updatedAt = Date.now(); ctx.emit('device.upsert', clone(d)); });
+  runLocks.set(r.id, taken.map((d) => d.id));
+  return null;
+}
+function releaseLocks(ctx: V2Ctx, r: HilRun) {
+  for (const id of runLocks.get(r.id) || []) {
+    const d = ctx.state.devices.find((x) => x.id === id);
+    if (d && d.lock?.sessionId === r.startedBy) { d.lock = null; d.updatedAt = Date.now(); ctx.emit('device.upsert', clone(d)); }
+  }
+  runLocks.delete(r.id);
 }
 
 // ---------------------------------------------------------------- command handling
@@ -546,7 +569,7 @@ export function handleV2(method: string, rawPath: string, url: URL, body: any, c
   if ((m = p.match(/^\/api\/devices\/([^/]+)\/lock$/))) {
     const d = st.devices.find((x) => x.id === m![1]);
     if (!d) return err(404, { error: 'no such device' });
-    if (body.sessionId && d.lock && d.lock.sessionId !== body.sessionId) return err(409, { error: 'device is locked by another session' });
+    // as in the hub: you can always reassign or release a lock from the hub (agents cannot)
     d.lock = body.sessionId ? { sessionId: body.sessionId, since: Date.now() } : null;
     d.updatedAt = Date.now();
     emit('device.upsert', clone(d));
@@ -554,7 +577,8 @@ export function handleV2(method: string, rawPath: string, url: URL, body: any, c
   }
 
   if (method === 'POST' && p === '/api/grants') {
-    const g: Grant = { id: `g_${Date.now().toString(36)}`, sessionId: body.sessionId, hostId: body.hostId, resources: body.resources, purpose: body.purpose, quotaGB: body.quotaGB ?? null, usedGB: 0, status: 'requested', createdAt: Date.now() };
+    // a grant you create in the hub is active at once (agents' request_compute grants start as requested)
+    const g: Grant = { id: `g_${Date.now().toString(36)}`, sessionId: body.sessionId, hostId: body.hostId, resources: body.resources, purpose: body.purpose, quotaGB: body.quotaGB ?? null, usedGB: 0, status: 'active', createdAt: Date.now() };
     st.grants.push(g); emit('grant.upsert', clone(g));
     return ok(clone(g));
   }
@@ -568,8 +592,10 @@ export function handleV2(method: string, rawPath: string, url: URL, body: any, c
   if ((m = p.match(/^\/api\/hil\/([^/]+)\/run$/)) && method === 'POST') {
     const plan = st.hil.plans.find((x) => x.id === m![1]);
     if (!plan) return err(404, { error: 'no such plan' });
-    if (st.hil.runs.some((r) => r.planId === plan.id && r.status === 'running')) return err(409, { error: 'a run is in progress' });
+    if (st.hil.runs.some((r) => r.planId === plan.id && r.status === 'running')) return err(409, { error: 'this plan is already running' });
     const r = makeRun(plan, `run_${++runN}`, 'you', Date.now());
+    const lockErr = takeLocks(ctx, r, plan);
+    if (lockErr) return err(409, { error: lockErr });
     stepRun(r);
     st.hil.runs.push(r); emit('hil.upsert', clone(r));
     return ok(clone(r));
@@ -582,6 +608,7 @@ export function handleV2(method: string, rawPath: string, url: URL, body: any, c
         r.rows.forEach((x) => { if (x.status === 'run') x.status = 'skip'; });
         r.status = 'aborted'; r.finishedAt = Date.now(); r.log = [...r.log, 'aborted by user'].slice(-14);
         r.left = r.rows.filter((x) => x.status === 'pending').length;
+        releaseLocks(ctx, r);
         emit('hil.upsert', clone(r));
       }
       return ok(clone(r));
@@ -589,7 +616,10 @@ export function handleV2(method: string, rawPath: string, url: URL, body: any, c
     const failed = r.rows.filter((x) => x.status === 'fail').map((x) => x.id);
     if (!failed.length) return err(409, { error: 'nothing failed' });
     const plan = st.hil.plans.find((x) => x.id === r.planId)!;
+    if (st.hil.runs.some((x) => x.planId === plan.id && x.status === 'running')) return err(409, { error: 'this plan is already running' });
     const nr = makeRun(plan, `run_${++runN}`, 'you', Date.now(), failed);
+    const lockErr = takeLocks(ctx, nr, plan);
+    if (lockErr) return err(409, { error: lockErr });
     stepRun(nr);
     st.hil.runs.push(nr); emit('hil.upsert', clone(nr));
     return ok(clone(nr));
@@ -629,7 +659,11 @@ export function startV2Ticks(ctx: V2Ctx) {
     if (g && g.usedGB != null && g.quotaGB) { g.usedGB = Math.min(g.quotaGB, +(g.usedGB + 0.1).toFixed(1)); ctx.emit('grant.upsert', clone(g)); }
   }, 2500);
   setInterval(() => {
-    ctx.state.hil.runs.forEach((r) => { if (r.status === 'running') { stepRun(r); ctx.emit('hil.upsert', clone(r)); } });
+    ctx.state.hil.runs.forEach((r) => {
+      if (r.status !== 'running') return;
+      if (!stepRun(r)) releaseLocks(ctx, r);
+      ctx.emit('hil.upsert', clone(r));
+    });
   }, 1600);
 }
 

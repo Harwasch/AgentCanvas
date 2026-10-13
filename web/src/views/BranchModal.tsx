@@ -26,6 +26,7 @@ function BranchForm() {
   const [goal, setGoal] = useState('');
   const [push, setPush] = useState(!!project?.gh);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false); // set synchronously: a second Enter before the re-render must not create the branch twice
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
   const baseBranch = branches[`${req.projectId}#${base}`];
@@ -37,7 +38,8 @@ function BranchForm() {
   const hint = !name.trim() ? 'Branch names: letters, digits, “-”, “_”, “.”, “/”.' : exists ? 'A branch with that name already exists.' : !nameOk ? 'Not a valid git branch name.' : !where ? 'No checkout of this repo on any host — clone it first.' : `Creates a git worktree on ${hosts[checkouts[where]?.host_id]?.label || 'the host'}${push ? ' and pushes it to GitHub' : ''}.`;
 
   const submit = async () => {
-    if (!ok) return;
+    if (!ok || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       const b = await api.createBranch({ projectId: req.projectId, checkoutId: where, base: base.trim(), name: name.trim(), goal: goal.trim() || undefined, push });
@@ -45,13 +47,20 @@ function BranchForm() {
       close();
       toast(`Branch ${b.name} created`);
       setTimeout(() => focusNode(b.id), 80);
-    } catch (e) { toast(`Could not create the branch: ${(e as Error).message}`, 'error'); setBusy(false); }
+    } catch (e) { toast(`Could not create the branch: ${(e as Error).message}`, 'error'); busyRef.current = false; setBusy(false); }
+  };
+  // one key handler for the whole dialog: Enter in the name field, or Ctrl/⌘+Enter anywhere
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') { close(); return; }
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
+    const t = e.target as HTMLElement;
+    if (e.metaKey || e.ctrlKey || t.dataset.enterSubmits) { e.preventDefault(); void submit(); }
   };
 
   return (
     <div className="modal-back" onPointerDown={close}>
       <div className="modal" role="dialog" aria-label="New branch" data-testid="branch-modal" onPointerDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => { if (e.key === 'Escape') close(); if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit(); }}>
+        onKeyDown={onKey}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Icon name="branch" size={16} sw={1.8} style={{ color: '#C9CCD2' }} />
           <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>New branch · {project?.name || req.projectId}</span>
@@ -60,7 +69,7 @@ function BranchForm() {
         <span style={{ fontSize: 12, color: '#A3A7AF', marginTop: -8, lineHeight: 1.45 }}>A branch is its own worktree on a host, so agents on it never step on each other.</span>
         <label className="field">Branch name
           <input ref={ref} className="in mono" data-testid="branch-name" style={{ height: 36, fontSize: 13.5 }} aria-label="Branch name" value={name} onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }} placeholder="feat/short-description" />
+            data-enter-submits="1" placeholder="feat/short-description" />
         </label>
         <div className="grid2">
           <label className="field">From (base)

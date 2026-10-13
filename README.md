@@ -9,7 +9,7 @@ browser (PWA) ──Tailscale──▶ hub (one Node process + SQLite on an alwa
                                └─ claude --cloud / codex cloud (run on the hub, per account profile)
 ```
 
-- `hub/`: the hub. TypeScript; `node:sqlite`; the system `ssh`; `ws`; Playwright for app screenshots; web-push.
+- `hub/`: the hub. TypeScript; `node:sqlite`; the system `ssh`; `ws`; Playwright for app screenshots; web-push. GitHub through the `gh` CLI.
 - `web/`: the PWA canvas (React + Vite): manifest, plus a service worker for app-shell caching and push only.
 - `host-files/hub_channel.py`: the one script the hub copies to each host. It is the channel/MCP server and relay, written against the Python 3 standard library only.
 - `stubs/`: stub `claude` and `codex` CLIs that speak the real protocols, used by the smoke test.
@@ -78,6 +78,41 @@ Copy `config/hub.config.example.json` to `config/hub.config.json` and edit it:
 
 **Adding a host or an account** is the same edit: add the entry, then restart the hub (`systemctl --user restart agent-hub`). Hosts appear within 30 s, and their checkouts on the next repo scan. Check SSH first with `ssh -i ~/.agent-hub/ssh/id_ed25519 user@host true`.
 
+### GitHub (per account, on the hub)
+
+GitHub goes through the official `gh` CLI: one config dir per account. No tokens go in hub config.
+
+```bash
+GH_CONFIG_DIR=~/.agent-hub/profiles/personal/gh gh auth login     # personal GitHub account
+GH_CONFIG_DIR=~/.agent-hub/profiles/work/gh     gh auth login     # company account (authorize org SSO if required)
+```
+
+Then set each account's `gh: { "configDir": "~/.agent-hub/profiles/<id>/gh", "owners": ["<github user or org>", …] }`. A repo uses the account whose `owners` include its remote's owner.
+
+From this the hub provides:
+- PR and CI status on branch nodes;
+- a scan of pushed `claude/*` and `codex/*` branches, including any apps on them;
+- any file at any ref as a node.
+
+New branches are git worktrees on the chosen host (`~/code/<repo>.worktrees/<branch>`). "Push to GitHub" uses that host's own git credentials.
+
+### Bench hardware, HIL plans, terminals
+
+Declare devices and hardware-in-the-loop plans per host in `hub.config.json`:
+
+```jsonc
+"devices": [ { "id": "stlink", "title": "ST-LINK V3SET", "icon": "SWD", "port": "/dev/ttyACM0", "probe": "st-info --probe | grep -q serial" },
+             { "id": "pcan",   "title": "PCAN-USB FD",   "icon": "CAN", "port": "can0",         "probe": "ip link show can0 | grep -q UP" } ],
+"hil":     [ { "id": "actuator-vv", "title": "Actuator V&V", "command": "./hil/run.sh", "cwd": "~/code/hexapod-robot",
+               "devices": ["stlink", "pcan"], "setup": ["mini-1", "PCAN-USB FD", "leg CAN bus", "ST-LINK"] } ]
+```
+
+- **Probes:** a probe's exit code sets the device status. Serial ports and SocketCAN interfaces that aren't declared are also discovered.
+- **HIL runners:** a runner prints `##hil plan <n>`, `##hil test <id> <req> <name>` and `##hil pass|fail|skip <id> <ms> [reason]`. Every other line is log output, and `HIL_ONLY=<ids>` re-runs the failed tests.
+- **Device locks:** agents lock devices with `acquire_device`; you can reassign or release a lock from the device node, and your own actions are never blocked by a lock.
+- **GPU metrics:** these need `nvidia-smi` on the host (`hosts[].bins.nvidiaSmi` overrides the path).
+- **Terminals:** each one is a tmux session on the host, opened as its login user. Opening and closing are audited.
+
 ### 4. HTTPS with `tailscale serve`
 
 Let Tailscale terminate TLS and keep the hub on localhost:
@@ -118,7 +153,8 @@ Every vendor CLI invocation is built and parsed in one place, `hub/src/adapters.
 ```jsonc
 "adapters": {
   "claude": { "bin": "claude", "cloudBin": "claude" },   // stubs: "/opt/agent-hub-stubs/bin/claude"
-  "codex":  { "bin": "codex",  "cloudBin": "codex"  }    // stubs: "/opt/agent-hub-stubs/bin/codex"
+  "codex":  { "bin": "codex",  "cloudBin": "codex"  },   // stubs: "/opt/agent-hub-stubs/bin/codex"
+  "gh":     { "bin": "gh" }                              // stubs: "/opt/agent-hub-stubs/bin/gh"
 }
 ```
 

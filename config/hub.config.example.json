@@ -16,6 +16,9 @@
     "codex": {
       "bin": "codex",
       "cloudBin": "codex"
+    },
+    "gh": {
+      "bin": "gh"
     }
   },
   "ssh": {
@@ -30,6 +33,42 @@
       "color": "#43D1B0",
       "roots": [
         "~/code"
+      ],
+      "devices": [
+        {
+          "id": "stlink",
+          "title": "ST-LINK V3SET",
+          "kind": "Debug probe \u00b7 SWD",
+          "icon": "SWD",
+          "port": "/dev/ttyACM0",
+          "probe": "test -e /dev/ttyACM0"
+        },
+        {
+          "id": "pcan",
+          "title": "PCAN-USB FD",
+          "kind": "USB-CAN",
+          "icon": "CAN",
+          "port": "can0",
+          "probe": "ip link show can0 | grep -q UP"
+        }
+      ],
+      "hil": [
+        {
+          "id": "actuator-vv",
+          "title": "Actuator V&V",
+          "command": "./hil/run.sh",
+          "cwd": "~/code/hexapod-robot",
+          "devices": [
+            "stlink",
+            "pcan"
+          ],
+          "setup": [
+            "mini-1",
+            "PCAN-USB FD",
+            "leg CAN bus",
+            "ST-LINK"
+          ]
+        }
       ]
     },
     {
@@ -67,7 +106,10 @@
         "email": "me@example.com"
       },
       "gh": {
-        "hostAlias": "github.com-personal"
+        "configDir": "~/.agent-hub/profiles/personal/gh",
+        "owners": [
+          "your-github-user"
+        ]
       },
       "hub": {
         "claudeConfigDir": "~/.agent-hub/profiles/personal/claude",
@@ -104,7 +146,10 @@
         "email": "me@company.example"
       },
       "gh": {
-        "hostAlias": "github.com-work"
+        "configDir": "~/.agent-hub/profiles/work/gh",
+        "owners": [
+          "your-company-org"
+        ]
       },
       "hub": {
         "claudeConfigDir": "~/.agent-hub/profiles/work/claude",
@@ -131,5 +176,7 @@
     "chromiumPath": ""
   },
   "repoIndexIntervalSec": 60,
-  "cloudPollIntervalSec": 30
+  "cloudPollIntervalSec": 30,
+  "githubPollIntervalSec": 60,
+  "metricsIntervalSec": 10
 }

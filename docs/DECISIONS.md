@@ -40,3 +40,35 @@ Precedence: the build prompt > `architecture.md` (behavior) > `AgentCanvas.html`
 - **Branch:** work is pushed to `claude/hub-v1` as the prompt asks, not to the session's default branch.
 - **Test hosts:** users `hosta` (mini-1) and `hostb` (mini-2) on localhost stand in for the two mini PCs. Stub CLIs live in `/opt/agent-hub-stubs` and are selected purely by `adapters.*.bin` in the config.
 - **Self-signed TLS and the PWA:** browsers refuse to register a service worker (and so push) on an untrusted certificate. With `tls: {cert, key}` the device has to trust the CA. `tailscale serve` avoids this, and the smoke test runs Chromium with `--ignore-certificate-errors`.
+
+## v2 (GitHub + all node types)
+- **GitHub access:** through the official `gh` CLI under a per-account `GH_CONFIG_DIR` on the hub (`accounts[].gh.{configDir, owners}`), behind `GitHubAdapter`. A repo maps to the account whose `owners` include the remote's owner. No tokens are stored in hub config.
+- **GitHub scope (per request):**
+  - PR and CI status on branch nodes;
+  - a scan of pushed branches (`claude/*`, `codex/*`, open-PR heads, hub-created) including `apps/*/app.json` on them;
+  - new branches as branch nodes;
+  - any file at any ref as a node.
+  - Creating or merging PRs and issues are not in scope.
+- **Which branches become nodes:** the default branch, branches checked out on any host, hub-created branches, open-PR heads, and `claude/*`/`codex/*` result branches. Not every remote branch, which would flood the canvas.
+- **New branch:** a `git worktree` on the chosen host at `<parent>/<repo>.worktrees/<branch-slug>`, so agents can work branches in parallel. "Push to GitHub" pushes with the host's own git credentials. The base and goal are stored in the hub (`branch_meta`).
+- **Cloud result branches:** a `claude/*` branch is linked to its cloud session by the stored `resultBranch`, or else by a commit subject that mentions the session id (heuristic).
+- **File pins:** a file node pins the last commit that touched the path. Uncommitted files pin to `worktree`, which always shows the current bytes. The hub polls for newer commits on the path and shows "Newer version · Get latest".
+- **Raw file serving:** repo files are served by `/api/files/raw` with `Content-Security-Policy: sandbox`, so an HTML or SVG file from a repo can never run as a hub-origin document.
+- **Reviews:** a review is a hub node an agent creates with `request_review`. Approve or Request changes sends the decision, the checklist state and your comments back to the agent session as a message. The agent does any promotion itself.
+- **Suggestions:** suggestions and agent-created to-dos come from agent tools (`suggest_followup`, `add_todo`). Launching a suggestion spawns a session with the agent's prompt; vendor and host can be overridden.
+- **To-dos:** to-do lists are hub-stored and scoped to a project or global. "Dispatch to agent" spawns a session with the to-do text as the prompt.
+- **Machines:** metrics come from `/proc/stat` deltas, `/proc/meminfo`, `/proc/loadavg` and `nvidia-smi --query-gpu …` over SSH every `metricsIntervalSec`. The two vendor clouds appear as "managed" machines.
+- **Devices:** devices are declared per host in config, with a `probe` command (exit 0 = connected), plus discovered serial (`/dev/ttyACM*`, `/dev/ttyUSB*`, `/dev/serial/by-id`) and SocketCAN interfaces. A discovered device that disappears shows as missing.
+- **Device locks** keep agents from colliding:
+  - an agent must hold the lock (`acquire_device`) of every device an app declares (`app.json` `devices`) before actuate calls;
+  - HIL runs take their plan's locks for their duration;
+  - **you are never blocked by a lock**, so STOP always goes through, and the audit records the override;
+  - the hub cannot stop a process on the host from opening a device directly; locks govern hub-mediated actions only;
+  - a session that ends releases its locks.
+- **Compute grants:**
+  - an agent asks with `request_compute`; you approve on the grant node;
+  - `run_on_host` then runs commands on that host as its login user, audited;
+  - "used" is the host's total GPU memory, not per-process usage.
+- **HIL protocol:** plans are declared per host. The runner prints the hub HIL line protocol (`##hil plan|test|pass|fail|skip`). "Re-run failed" passes `HIL_ONLY=<ids>`. A run started by an agent reports back to it as a message.
+- **Terminals:** each terminal is a tmux session on the host. Every browser view is a tmux client over `ssh -tt`, and resizes run `stty` on that client's pty. Opening and closing a terminal are audited, but keystrokes are not. The WebSocket requires the hub cookie and a same-origin `Origin`. "Agent pane" mode attaches to a Claude session's own tmux.
+- **Test env remotes:** remotes are `https://github.com/agent-hub-test|agent-hub-corp/<repo>` mapped to the local bare repos with a system `url.insteadOf`. The indexer reads `remote.origin.url` as configured, not the expanded value. The stub `gh` answers from those bare repos plus a PR/CI fixture file.

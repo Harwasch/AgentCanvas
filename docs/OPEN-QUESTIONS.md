@@ -59,3 +59,22 @@ The stubs implement each of these as listed below. Every item needs checking aga
 
 38. **Sandbox proxy.** The spec requires a sandbox proxy on a separate origin; the hub uses an opaque-origin sandbox instead (see DECISIONS). An app built against the official SDK should still work, because the SDK talks to `window.parent` with targetOrigin `*`. Verify with an SDK-built app.
 39. **Claude Code as an MCP Apps host.** Untested whether the Claude Code CLI advertises the `io.modelcontextprotocol/ui` client capability. The hub always advertises it to app servers.
+
+## GitHub (`gh`)
+
+40. **`gh api` shapes.** The stub returns the GitHub REST v2022-11-28 fields the hub reads:
+    - `pulls` (`head.ref`, `draft`, `merged_at`);
+    - `pulls/{n}/reviews` (`state`);
+    - `commits/{sha}/check-runs` (`status`, `conclusion`);
+    - `commits?sha=&path=`, `compare/a...b` (`ahead_by`, `behind_by`), `git/trees?recursive=1`, and `contents` with `Accept: application/vnd.github.raw`.
+    These are stable public API shapes, but the hub has only run them against the stub.
+41. **Rate limits.** The hub polls every `githubPollIntervalSec` (default 60 s): per project, one call each for the repo, branches and PRs, plus per-branch calls for reviews, check runs and trees. Many projects or branches could hit the 5,000 requests/h limit; ETags and conditional requests are not used yet.
+42. **Multiple accounts.** `GH_CONFIG_DIR` per account assumes `gh auth login` was run once per directory on the hub. Org SSO authorization (company account) is untested.
+43. **Pushing new branches from hosts** uses the host's git credentials (an SSH key or the `gh` credential helper on that host). The hub doesn't provide them.
+44. **Cloud result branches.** Real Claude cloud sessions push `claude/<slug>` branches. Linking a branch to its session relies on the stored `resultBranch` (the stub sets it) or on a commit message mentioning the session id, and the real CLI does neither. A reliable link may need the session's branch from claude.ai.
+
+## Hardware and compute
+
+45. **`nvidia-smi` query format** (`--query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is stable on real drivers but untested here (stub GPU). AMD and Jetson GPUs are not read.
+46. **Device discovery** lists `/dev/ttyACM*`, `/dev/ttyUSB*` and `/dev/serial/by-id` names, and `ip -br link` CAN interfaces. Real probes (ST-LINK `st-info --probe`, `candump -n1`, SCPI `*IDN?`) belong in each device's configured `probe` command; untested here.
+47. **Terminal pty resize** via `stty -F <client pty>` depends on the host user owning that pty (true for `ssh -tt`). tmux needs `window-size latest` (the default in tmux ≥ 3.1) so that one tmux session viewed from several browsers follows the latest resize.

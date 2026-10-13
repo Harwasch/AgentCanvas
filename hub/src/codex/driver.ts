@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import type { Ctx } from '../ctx.js';
 import { CodexAdapter } from '../adapters.js';
 import { JsonRpcPeer, PARKED, RpcError } from '../jsonrpc.js';
-import { newId, type Session } from '../store.js';
+import { clipTail, newId, type Session } from '../store.js';
 import { log } from '../events.js';
 
 const L = log('codex');
@@ -318,12 +318,10 @@ export class CodexDriver {
       case 'item/reasoning/summaryTextDelta':
         this.c.store.appendDelta(`cxi-${p.itemId}`, s.id, p.delta, { role: 'assistant', kind: 'reasoning' });
         break;
-      case 'item/commandExecution/outputDelta': {
-        const m = this.c.db.get('SELECT data, text FROM message WHERE id=?', `cxi-${p.itemId}`);
-        const data = m?.data ? JSON.parse(m.data) : {};
-        this.c.store.upsertMessage({ id: `cxi-${p.itemId}`, session_id: s.id, role: 'tool', kind: 'command', text: m?.text ?? '', data: { ...data, output: (data.output || '') + p.delta } });
+      case 'item/commandExecution/outputDelta':
+        // coalesced, throttled and tail-limited by the store (message.append on the wire)
+        this.c.store.appendOutput(`cxi-${p.itemId}`, s.id, p.delta, { role: 'tool', kind: 'command', text: '', data: {} });
         break;
-      }
       case 'serverRequest/resolved':
         // answered by another client (e.g. the desktop app) or aborted: withdraw the prompt here
         for (const a of this.c.store.pendingApprovals())
@@ -349,9 +347,11 @@ export class CodexDriver {
         if (final && item.summary?.length) put({ role: 'assistant', kind: 'reasoning', text: item.summary.join('\n') });
         break;
       case 'commandExecution': {
-        const prev = this.c.db.get('SELECT data FROM message WHERE id=?', id);
-        const pd = prev?.data ? JSON.parse(prev.data) : {};
-        put({ role: 'tool', kind: 'command', text: item.command, data: { ...pd, status: item.status, exitCode: item.exitCode, output: item.aggregatedOutput ?? pd.output ?? '' } });
+        const pd = this.c.store.message(id)?.data || {};
+        const full = item.aggregatedOutput != null ? String(item.aggregatedOutput) : null;
+        const output = full != null ? clipTail(full) : pd.output ?? '';
+        const outputLen = full != null ? full.length : pd.outputLen ?? output.length;
+        put({ role: 'tool', kind: 'command', text: item.command, data: { ...pd, status: item.status, exitCode: item.exitCode, output, outputLen } });
         break;
       }
       case 'fileChange':

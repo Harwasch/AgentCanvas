@@ -132,11 +132,11 @@ export async function main() {
       const boot = u.searchParams.get('boot');
       ws.on('error', (e) => L(`events socket: ${e.message}`));
       // hello first: a client from another hub run (seq restarted) or one that fell out of the replay ring must resync
-      const missed = bus.since(since);
-      const gap = (!!boot && boot !== c.bootId) || since > bus.seq || (since > 0 && since < bus.seq && (!missed.length || missed[0].seq > since + 1));
-      ws.send(JSON.stringify({ seq: 0, type: 'hello', data: { boot: c.bootId, seq: bus.seq, resync: gap }, ts: Date.now() }));
-      if (!gap) for (const ev of missed) ws.send(JSON.stringify(ev));
-      const on = (ev: any) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(ev));
+      const hello = bus.hello(since, boot, c.bootId);
+      ws.send(JSON.stringify({ seq: 0, type: 'hello', data: hello, ts: Date.now() }));
+      if (!hello.resync) for (const k of bus.sinceJson(since)) ws.send(k.json);
+      // events are serialized once on publish
+      const on = (ev: any, json?: string) => ws.readyState === ws.OPEN && ws.send(json ?? JSON.stringify(ev));
       bus.on('event', on);
       // keepalive: a text frame the PWA can see (it treats silence as a dead socket) plus a ping; no pong for a round → drop
       let alive = true;
@@ -187,6 +187,7 @@ export async function main() {
     c.nodes.stop();
     c.claude.stopLiveness();
     await c.apps.stop();
+    store.flushStreams();
     hosts.stop();
     server.close();
     process.exit(0);

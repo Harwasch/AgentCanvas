@@ -228,13 +228,16 @@ function addMsg(sid: string, role: Message['role'], kind: Message['kind'], text:
   return m;
 }
 
+/** Streams like the hub: the first chunk creates the message (message.upsert), the rest arrive as message.append. */
 async function streamReply(sid: string, text: string) {
-  const m = addMsg(sid, 'assistant', 'text', '');
   const words = text.split(' ');
-  for (let i = 1; i <= words.length; i += 3) {
+  const m = addMsg(sid, 'assistant', 'text', words.slice(0, 3).join(' '));
+  for (let i = 3; i < words.length; i += 3) {
     await delay(90);
-    m.text = words.slice(0, i + 2).join(' ');
-    emit('message.upsert', { ...m });
+    const append = ' ' + words.slice(i, i + 3).join(' ');
+    const at = m.text.length;
+    m.text += append;
+    emit('message.append', { id: m.id, session_id: sid, seq: m.seq, kind: m.kind, append, at });
   }
 }
 

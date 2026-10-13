@@ -22,6 +22,9 @@ interface Live {
   tail?: ChildProcess;
   closed: boolean;
   relayBackoff: number;
+  /** transcript lines already read (kept in session meta, so a reattach starts after them instead of replaying the file) */
+  tLines?: number;
+  tSave?: NodeJS.Timeout;
 }
 
 /** tmux's own answer for one session; 'unknown' when the host could not be asked (ssh failed, tmux missing). */
@@ -194,7 +197,8 @@ export class ClaudeDriver {
     const s = this.c.store.session(id);
     if (!l || !s || l.closed || l.tail) return;
     const t = s.meta.transcript as string;
-    const p = this.c.hosts.spawn(s.host_id!, `tail -n +1 -F -- ${q(t)} 2>/dev/null`);
+    l.tLines ??= Math.max(0, Number(s.meta.tLines) || 0);
+    const p = this.c.hosts.spawn(s.host_id!, `tail -n +${l.tLines + 1} -F -- ${q(t)} 2>/dev/null`);
     l.tail = p;
     let buf = '';
     p.stdout!.on('data', (d) => {
@@ -203,17 +207,28 @@ export class ClaudeDriver {
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
+        l.tLines = (l.tLines || 0) + 1;
         try {
           this.onTranscript(id, line);
         } catch (e: any) {
           L(`${id}: transcript line: ${e.message}`);
         }
       }
+      // the line count is saved quietly (no session.upsert), at most every 2 s
+      l.tSave ??= setTimeout(() => this.saveTranscriptPos(id), 2000);
     });
     p.on('close', () => {
       l.tail = undefined;
       if (!l.closed) setTimeout(() => this.startTail(id), 3000);
     });
+  }
+
+  private saveTranscriptPos(id: string) {
+    const l = this.live.get(id);
+    if (!l) return;
+    clearTimeout(l.tSave);
+    l.tSave = undefined;
+    if (l.tLines != null) this.c.store.patchMetaQuiet(id, { tLines: l.tLines });
   }
 
   private onTranscript(id: string, line: string) {
@@ -336,6 +351,7 @@ export class ClaudeDriver {
       l.closed = true;
       l.relay?.kill();
       l.tail?.kill();
+      if (l.tSave) this.saveTranscriptPos(id);
     }
     this.live.delete(id);
     L(`${id}: ${why}`);

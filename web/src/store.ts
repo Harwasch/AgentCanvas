@@ -132,11 +132,61 @@ function upsertMsg(list: Message[] | undefined, m: Message): Message[] {
 /** replace: drop what was cached (after a hub restart the cache may hold rows the hub no longer has) */
 export function setMessages(sessionId: string, msgs: Message[], replace = false) {
   hub.set((s) => {
-    // merge: keep anything streamed in meanwhile
+    // merge: keep anything streamed in meanwhile (new messages, and text appended after the hub read its copy)
     let list = msgs.slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-    if (!replace) (s.messages[sessionId] || []).forEach((m) => { if (!list.find((x) => x.id === m.id)) list = upsertMsg(list, m); });
+    if (!replace) {
+      const cached = new Map((s.messages[sessionId] || []).map((m) => [m.id, m]));
+      list = list.map((m) => {
+        const c = cached.get(m.id);
+        return c && typeof c.text === 'string' && typeof m.text === 'string' && c.text.length > m.text.length && c.text.startsWith(m.text) ? c : m;
+      });
+      cached.forEach((m) => { if (!list.find((x) => x.id === m.id)) list = upsertMsg(list, m); });
+    }
     return { messages: { ...s.messages, [sessionId]: list } };
   });
+}
+
+/** Command output kept per message (same tail rule as the hub). */
+const OUTPUT_TAIL = 64 * 1024;
+const TRUNCATED = '…truncated…\n';
+export function clipTail(s: string, max = OUTPUT_TAIL): string {
+  if (s.length <= max + TRUNCATED.length && (s.length <= max || s.startsWith(TRUNCATED))) return s;
+  return TRUNCATED + s.slice(-max);
+}
+
+export interface MessageAppend { id: string; session_id: string; seq?: number; kind?: string; field?: 'output'; append: string; at?: number; reset?: boolean; len?: number }
+/**
+ * Apply a streamed append to a cached message. `at` is the offset the append starts at, so a repeated append is
+ * skipped and an overlapping one adds only its new part. Returns null when the message is unknown or text is
+ * missing before `at` (the caller refetches the transcript).
+ */
+export function applyAppend(m: Message | undefined, d: MessageAppend): Message | null {
+  if (!m) return null;
+  const add = (cur: string, curLen: number): { text: string; len: number } | null => {
+    if (d.at == null || d.at === curLen) return { text: cur + d.append, len: curLen + d.append.length };
+    if (d.at > curLen) return null;
+    const over = curLen - d.at;
+    return over >= d.append.length ? { text: cur, len: curLen } : { text: cur + d.append.slice(over), len: d.at + d.append.length };
+  };
+  if (d.field === 'output') {
+    const data = m.data || {};
+    if (d.reset) return { ...m, data: { ...data, output: d.append, outputLen: d.len ?? d.append.length } };
+    const cur = String(data.output ?? '');
+    const r = add(cur, Number(data.outputLen ?? cur.length));
+    return r ? (r.text === cur ? m : { ...m, data: { ...data, output: clipTail(r.text), outputLen: r.len } }) : null;
+  }
+  if (d.reset) return { ...m, text: d.append };
+  const cur = m.text || '';
+  const r = add(cur, cur.length);
+  return r ? (r.text === cur ? m : { ...m, text: r.text }) : null;
+}
+
+/** an append for a message we do not have (or with a gap): refetch that transcript, once at a time */
+const refetching = new Set<string>();
+function refetchForAppend(sessionId: string) {
+  if (refetching.has(sessionId)) return;
+  refetching.add(sessionId);
+  setTimeout(() => { void fetchMessages(sessionId).finally(() => refetching.delete(sessionId)); }, 150);
 }
 
 export function applyEvent(ev: HubEvent) {
@@ -149,6 +199,21 @@ export function applyEvent(ev: HubEvent) {
     case 'checkout.upsert': hub.set({ seq, checkouts: { ...s.checkouts, [d.id]: d } }); break;
     case 'session.upsert': hub.set({ seq, sessions: { ...s.sessions, [d.id]: { ...(s.sessions[d.id] || {}), ...d } } }); break;
     case 'message.upsert': hub.set({ seq, messages: { ...s.messages, [d.session_id]: upsertMsg(s.messages[d.session_id], d) } }); break;
+    case 'message.append': {
+      const list = s.messages[d.session_id];
+      const i = list ? list.findIndex((x) => x.id === d.id) : -1;
+      const next = i >= 0 ? applyAppend(list![i], d) : null;
+      if (!next) {
+        hub.set({ seq });
+        // only transcripts that are loaded (on screen or cached) are worth fetching
+        if (list || watched.has(d.session_id)) refetchForAppend(d.session_id);
+      } else if (next !== list![i]) {
+        const copy = list!.slice();
+        copy[i] = next;
+        hub.set({ seq, messages: { ...s.messages, [d.session_id]: copy } });
+      } else hub.set({ seq });
+      break;
+    }
     case 'approval.upsert': hub.set({ seq, approvals: { ...s.approvals, [d.id]: d } }); break;
     case 'node.upsert': hub.set({ seq, nodes: { ...s.nodes, [d.id]: d } }); break;
     case 'node.remove': {

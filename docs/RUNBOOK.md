@@ -1,6 +1,6 @@
 # Bring-up runbook: Agent Hub on your machines
 
-Branch: `claude/hub-v1`. The stubs pass 34/34 end to end, and unit tests pass 78/78. Nothing has run against the real `claude`, `codex` or `gh` yet. Phase 5 is where that happens.
+Branch: `claude/hub-v1`. The stubs pass 34/34 end to end, and unit tests pass 78/78. Nothing has run against the real `claude`, `codex` or `gh` yet. Phase 4 is where that happens.
 
 Each phase says **what you do** (logins, sudo, decisions) and gives a **prompt to paste** into Claude Code. Every prompt is self-contained. Run them in a Claude Code session **on the hub machine, inside the cloned repo**, because only that machine can reach your hosts. Claude cannot log in for you: every `/login`, `codex login`, `gh auth login` and `tailscale up` is yours to do.
 
@@ -8,13 +8,12 @@ Each phase says **what you do** (logins, sudo, decisions) and gives a **prompt t
 |---|---|---|---|
 | 0 Decide | you | 10 min | The table below is filled in |
 | 1 Hub machine | hub box | 30 min | `npm test` is green under your user |
-| 2 Optional dry run | throwaway VM | 20 min | smoke 34/34 on your own hardware |
-| 3 Hosts | each host | 15 min per host | The readiness table is all ✓ |
-| 4 Config, GitHub, HTTPS, service | hub box | 30 min | The PWA opens at `https://<hub>.ts.net` on your phone |
-| 5 First light (real CLIs) | 1 host | 1–2 h | The RISKY items are verified or fixed |
-| 6 Codex daemon, clouds, GitHub | hub plus 1 host | 1 h | Codex, cloud and PR/CI work for real |
-| 7 Ask Claude from your laptop | laptop | 15 min | Claude Code / Desktop can arrange the canvas |
-| 8 Hardware and HIL | bench host | as needed | Devices show, and a HIL plan runs |
+| 2 Hosts | each host | 15 min per host | The readiness table is all ✓ |
+| 3 Config, GitHub, HTTPS, service | hub box | 30 min | The PWA opens at `https://<hub>.ts.net` on your phone |
+| 4 First light (real CLIs) | 1 host | 1–2 h | The RISKY items are verified or fixed |
+| 5 Codex daemon, clouds, GitHub | hub plus 1 host | 1 h | Codex, cloud and PR/CI work for real |
+| 6 Ask Claude from your laptop | laptop | 15 min | Claude Code / Desktop can arrange the canvas |
+| 7 Hardware and HIL | bench host | as needed | Devices show, and a HIL plan runs |
 
 ---
 
@@ -57,23 +56,11 @@ Read README.md ("Install on a real Linux host") and docs/RUNBOOK.md phase 1.
 3. Find a Chromium binary usable for app screenshots (system chromium, or the Playwright one) and tell me
    the path for config "screenshot.chromiumPath".
 Rules: do NOT run scripts/smoke.mjs, scripts/setup-test-env.sh or scripts/reset-test-env.sh on this machine
-(they create test users and change system git config; they are for throwaway VMs only). Before any sudo
+(they create test users and change system git config; they are for disposable test machines only). Before any sudo
 command, stop and show it to me. Never print secrets.
 ```
 
-## Phase 2 (optional): a dry run on a throwaway VM
-
-This proves the build on your hardware and OS before real CLIs are involved. Use a disposable Ubuntu VM, never the hub box.
-
-**Prompt 2**
-```
-This is a disposable Ubuntu VM. Clone github.com/harwasch/AgentCanvas (branch claude/hub-v1), install
-Node 22, run `npm ci && npm run build && npm test`, then `sudo node scripts/smoke.mjs` (needs root; it creates
-test users hosta/hostb and a local sshd setup). Report the N/N result and, for any failure, the check name,
-the last 40 lines of ~/.agent-hub/smoke-hub.log and your diagnosis. Don't change code unless I ask.
-```
-
-## Phase 3: hosts (repeat per host)
+## Phase 2: hosts (repeat per host)
 
 **You, on each host:**
 1. Make or choose a login user without sudo, and append the hub's public key (from Prompt 1) to its `~/.ssh/authorized_keys`.
@@ -88,7 +75,7 @@ the last 40 lines of ~/.agent-hub/smoke-hub.log and your diagnosis. Don't change
    Do not set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
 4. In `/etc/ssh/sshd_config` set `MaxSessions 64`, then `sudo systemctl reload ssh`.
 
-**Prompt 3: host readiness check**
+**Prompt 2: host readiness check**
 ```
 Agent Hub is installed at ~/agent-hub on this machine, under my user (hub SSH key: ~/.agent-hub/ssh/id_ed25519).
 My hosts are: <paste the hosts row from the phase-0 table>. My profiles: <paste the account rows>.
@@ -100,7 +87,7 @@ packaged install) · for each Claude profile: logged in? (check `$CLAUDE_CONFIG_
 I should run on that host. Do not install or change anything on the hosts yourself.
 ```
 
-## Phase 4: config, GitHub, HTTPS, service
+## Phase 3: config, GitHub, HTTPS, service
 
 **You:** on the hub box, under your user, log in the hub's own profiles once per account. These are separate from your personal logins:
 ```bash
@@ -110,7 +97,7 @@ CLAUDE_CONFIG_DIR=~/.agent-hub/profiles/personal/claude claude    # /login: the 
 CODEX_HOME=~/.agent-hub/profiles/personal/codex codex login
 ```
 
-**Prompt 4: configure and start**
+**Prompt 3: configure and start**
 ```
 In ~/agent-hub (under my user), create config/hub.config.json from config/hub.config.example.json for:
 <paste your full phase-0 table>. Hub tailnet name: <minipc-a.xxx.ts.net>. Use listen 127.0.0.1:8443, tls null,
@@ -127,11 +114,11 @@ Validate the JSON, then:
 
 **You:** run the `tailscale serve` command. Then open `https://<hub>.ts.net` on your phone, sign in with the hub token, choose "Install app", and turn on notifications.
 
-## Phase 5: first light with the real CLIs (one host)
+## Phase 4: first light with the real CLIs (one host)
 
 This is where reality may differ from the stubs. `docs/OPEN-QUESTIONS.md` lists every assumption. Take the RISKY ones first.
 
-**Prompt 5: verify the Claude gating questions**
+**Prompt 4: verify the Claude gating questions**
 ```
 Agent Hub runs as a systemd user service under my user (repo ~/agent-hub, branch claude/hub-v1, log via
 journalctl --user -u agent-hub). It now drives REAL Claude Code on host <first-light host>.
@@ -151,9 +138,9 @@ changed, run `npm run build && npm test`, restart the service, re-check. Commit 
 Stop and ask me before anything that needs my login or sudo, and before any change to the security tiers.
 ```
 
-## Phase 6: Codex daemon, the clouds, GitHub
+## Phase 5: Codex daemon, the clouds, GitHub
 
-**Prompt 6**
+**Prompt 5**
 ```
 Same setup as before (Agent Hub as a systemd user service under my user, ~/agent-hub, branch claude/hub-v1). Verify against the real tools,
 recording results in docs/OPEN-QUESTIONS.md and fixing adapters where needed (build, test, restart, commit, push):
@@ -168,13 +155,13 @@ if usage > 50% of the hourly limit.
 Start one small real task per vendor in a scratch repo, approve one tool call from the hub, interrupt one turn.
 ```
 
-## Phase 7: Ask Claude, and the canvas from your laptop
+## Phase 6: Ask Claude, and the canvas from your laptop
 
 - **In the PWA:** open Ask Claude, pick a host and account, select some nodes, and say "arrange these in a grid". Then try "start a codex session on <host> to …" and Allow it.
 - **Claude Code on your laptop:** `claude mcp add --transport http agent-hub https://<hub>.ts.net/mcp --header "Authorization: Bearer <mcpToken>"`. The `mcpToken` is in `secrets.json`.
 - **Claude Desktop:** use the stdio bridge config from the README ("Use the canvas tools from Claude Code or Claude Desktop").
 
-**Prompt 7 (paste into Claude Code on your laptop, after `claude mcp add`)**
+**Prompt 6 (paste into Claude Code on your laptop, after `claude mcp add`)**
 ```
 Use the agent-hub MCP tools. Call canvas_snapshot and hub_overview, then: switch the canvas to the tree
 layout, arrange all session nodes in a grid, add a note above them summarising what each session is doing,
@@ -182,9 +169,9 @@ and focus the busiest one. Tell me what you changed; I'll check it live on the c
 ```
 If this fails, open question #50 is the likely cause (whether `claude mcp add --transport http` accepts the hub's plain-JSON endpoint). Paste the error into a hub-machine session with: "Fix /mcp compatibility per docs/OPEN-QUESTIONS.md #50".
 
-## Phase 8: hardware and HIL (bench host)
+## Phase 7: hardware and HIL (bench host)
 
-**Prompt 8**
+**Prompt 7**
 ```
 On host <bench host> I have: <list devices: e.g. ST-LINK V3SET on /dev/ttyACM0, PCAN-USB FD as can0>.
 Add them to that host's "devices" in ~/agent-hub/config/hub.config.json with real probe commands (exit code =
@@ -209,5 +196,5 @@ docs/DECISIONS.md, reproduce if you can, and propose the smallest fix. Show me t
 
 **Known limits:**
 - Wheel zoom with about 400+ nodes on screen is still slow.
-- Each Claude session holds 2 SSH channels, so set `MaxSessions` (phase 3).
+- Each Claude session holds 2 SSH channels, so set `MaxSessions` (phase 2).
 - Undo history lives in memory, so it is lost when the hub restarts.

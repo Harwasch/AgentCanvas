@@ -329,18 +329,56 @@ export class AppService {
     return (await this.c.hosts.execOk(hostId, `git -C ${q(dir)} rev-parse --show-toplevel`)).trim();
   }
 
+  /**
+   * The exact tree "Commit & pin" would commit: HEAD plus everything under the app dir (tracked changes,
+   * deletions and untracked files, recursively), built in a throwaway index. Prints head, head tree, tree.
+   */
+  private treeScript(dir: string) {
+    return `cd ${q(dir)} && head=$(git rev-parse HEAD) && idx="$(git rev-parse --absolute-git-dir)/agent-hub-review.$$" && ` +
+      `trap 'rm -f "$idx"' EXIT && GIT_INDEX_FILE="$idx" git read-tree "$head" && GIT_INDEX_FILE="$idx" git add -A -- . && ` +
+      `tree=$(GIT_INDEX_FILE="$idx" git write-tree) && printf '%s\\n%s\\n%s\\n' "$head" "$(git rev-parse "$head^{tree}")" "$tree"`;
+  }
+
   async review(id: string) {
     const r = this.row(id)!;
     const m: AppManifest = j<AppManifest>(r.manifest, null);
-    const head = await this.c.hosts.exec(r.host_id, `git -C ${q(r.dir)} rev-parse HEAD && git -C ${q(r.dir)} status --porcelain -- .`);
-    const [commit, ...dirty] = head.stdout.trim().split('\n');
-    const ls = await this.c.hosts.exec(r.host_id, `cd ${q(r.dir)} && for f in $(ls -1 | head -20); do [ -f "$f" ] && [ $(wc -c < "$f") -lt 100000 ] && printf '\\036%s\\n' "$f" && cat "$f"; done`);
-    const serverFiles = ls.stdout.split('\u001e').filter(Boolean).map((chunk) => {
-      const i = chunk.indexOf('\n');
-      return { path: chunk.slice(0, i), content: chunk.slice(i + 1) };
-    });
-    const reviewHash = crypto.createHash('sha256').update(JSON.stringify(serverFiles)).digest('hex').slice(0, 16);
-    return { id, version: r.version, state: r.state, candidateCommit: head.code === 0 ? commit : null, dirtyFiles: dirty.filter(Boolean), tools: m.tools, lifecycle: m.lifecycle, serverFiles, reviewHash };
+    const t = await this.c.hosts.exec(r.host_id, this.treeScript(r.dir) +
+      ` && printf '\\036' && GIT_INDEX_FILE="$idx" git diff --cached --name-status --relative --no-renames -z "$head" -- . && printf '\\036' && git ls-tree -r -l -z "$tree" -- .`);
+    const [ids = '', diff = '', tree = ''] = t.stdout.split('\u001e');
+    const [commit, headTree, appTree] = ids.trim().split('\n');
+    const ok = t.code === 0 && /^[0-9a-f]{40,64}$/.test(commit || '') && /^[0-9a-f]{40,64}$/.test(appTree || '');
+    // every change Commit & pin would commit (status + path relative to the app dir)
+    const d = diff.split('\0').filter(Boolean);
+    const changes: { status: string; path: string }[] = [];
+    for (let i = 0; i + 1 < d.length; i += 2) changes.push({ status: d[i], path: d[i + 1] });
+    // source preview: every file of the reviewed tree (text only, truncated; the list itself is complete)
+    const entries = tree.split('\0').filter(Boolean).map((e) => {
+      const m2 = e.match(/^\d+ (\w+) ([0-9a-f]+)\s+(\d+|-)\t(.*)$/s);
+      return m2 && m2[1] === 'blob' ? { sha: m2[2], size: Number(m2[3]) || 0, path: m2[4] } : null;
+    }).filter(Boolean) as { sha: string; size: number; path: string }[];
+    const changed = new Set(changes.map((c) => c.path));
+    const shown = [...entries].sort((a, b) => Number(changed.has(b.path)) - Number(changed.has(a.path))).slice(0, 60);
+    const PREVIEW = 100_000;
+    let serverFiles: { path: string; content: string; size: number; truncated: boolean; changed: boolean }[] = [];
+    if (shown.length) {
+      // blobs back to back, each cut to min(size, PREVIEW) bytes: split by length, so file content cannot fake a boundary
+      const cat = await this.c.hosts.execBuf(r.host_id, `cd ${q(r.dir)} && for s in ${shown.map((e) => e.sha).join(' ')}; do git cat-file blob "$s" | head -c ${PREVIEW}; done`);
+      let off = 0;
+      serverFiles = shown.map((e) => {
+        const n = Math.min(e.size, PREVIEW);
+        const raw = cat.stdout.subarray(off, off + n);
+        off += n;
+        const binary = raw.includes(0);
+        return { path: e.path, size: e.size, changed: changed.has(e.path), truncated: binary || e.size > PREVIEW, content: binary ? `(binary, ${e.size} bytes)` : raw.toString('utf8') };
+      });
+    }
+    // binds the reviewed base commit and the full content of what would be committed
+    const reviewHash = ok ? crypto.createHash('sha256').update(`${commit}:${appTree}`).digest('hex').slice(0, 16) : '';
+    return {
+      id, version: r.version, state: r.state, candidateCommit: ok ? commit : null, appTree: ok ? appTree : null,
+      dirtyFiles: ok && headTree !== appTree ? changes.map((c) => c.path) : [], changes, files: entries.map((e) => e.path),
+      tools: m.tools, lifecycle: m.lifecycle, serverFiles, reviewHash,
+    };
   }
 
   /** Pin a git commit, run the server from a worktree at that commit, and (optionally) grant actuate for this version. */
@@ -362,11 +400,17 @@ export class AppService {
     if (!head.startsWith(o.commit)) throw new Error(`HEAD moved: reviewed ${o.commit.slice(0, 8)}, now ${head.slice(0, 8)}; review again`);
     if (rev.dirtyFiles.length) {
       if (!o.commitDirty || !o.reviewHash) throw new Error(`app has uncommitted changes; commit them (or use "commit & pin" after review):\n${rev.dirtyFiles.join('\n')}`);
-      // commit exactly the reviewed app files under the session account's git identity
+      // commit exactly the reviewed tree under the session account's git identity: rebuild it right before
+      // committing, refuse if it differs from the reviewed one, then commit that tree object (nothing else can slip in)
       const acct = this.c.account(this.c.store.session(r.session_id)?.account_id ?? this.c.cfg.accounts[0].id);
       const ident = `-c user.name=${q(acct.git?.name || 'agent-hub')} -c user.email=${q(acct.git?.email || 'hub@localhost')}`;
-      await this.c.hosts.execOk(r.host_id, `cd ${q(r.dir)} && git add -A -- . && git ${ident} commit -q -m ${q(`Pin ${r.title} v${r.version} for promotion (Agent Hub)`)} -- .`);
-      head = (await this.c.hosts.execOk(r.host_id, `git -C ${q(r.dir)} rev-parse HEAD`)).trim();
+      const msg = q(`Pin ${r.title} v${r.version} for promotion (Agent Hub)`);
+      const out = await this.c.hosts.exec(r.host_id, this.treeScript(r.dir) +
+        ` && [ "$head" = ${q(rev.candidateCommit!)} ] && [ "$tree" = ${q(rev.appTree!)} ] || { echo "app files changed since review" >&2; exit 5; }; ` +
+        `c=$(git ${ident} commit-tree "$tree" -p "$head" -m ${msg}) && git update-ref -m ${msg} HEAD "$c" "$head" && git reset -q -- . && printf '\\036%s' "$c"`);
+      if (out.code === 5) throw new Error('app files changed since you reviewed them; review again');
+      if (out.code !== 0) throw new Error(`commit failed: ${out.stderr.trim().slice(0, 300)}`);
+      head = out.stdout.split('\u001e').pop()!.trim();
     }
     const root = await this.repoRoot(r.host_id, r.dir);
     const rel = r.dir.slice(root.length + 1);

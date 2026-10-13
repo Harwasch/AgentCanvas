@@ -24,6 +24,7 @@ export function PromoteModal() {
   if (!id || !node) return null;
   const close = () => ui.set({ promoteId: null });
   const dirty = review?.dirtyFiles || [];
+  const changes = review?.changes ?? dirty.map((path) => ({ status: 'M', path }));
   const grant = async () => {
     if (!review) return;
     setBusy(true);
@@ -64,8 +65,10 @@ export function PromoteModal() {
             </div>
             {dirty.length ? (
               <div style={{ border: '1px solid rgba(255,210,63,.5)', background: 'rgba(255,210,63,.06)', borderRadius: 10, padding: '9px 11px', display: 'flex', flexDirection: 'column', gap: 5 }} data-testid="promote-dirty">
-                <span style={{ fontSize: 12, color: '#FFD23F', fontWeight: 600 }}>{dirty.length} uncommitted app file{dirty.length > 1 ? 's' : ''} — they will be committed exactly as reviewed, then pinned</span>
-                {dirty.map((f) => <span key={f} className="mono" style={{ fontSize: 11.5, color: '#E7E8EA' }}>M {f}</span>)}
+                <span style={{ fontSize: 12, color: '#FFD23F', fontWeight: 600 }}>{changes.length} uncommitted change{changes.length > 1 ? 's' : ''} under the app directory — committed exactly as reviewed (all of them, including new files in subfolders), then pinned</span>
+                <div className="scroll" style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 140, overflow: 'auto' }}>
+                  {changes.map((f) => <span key={f.path} className="mono" data-testid="promote-change" style={{ fontSize: 11.5, color: '#E7E8EA' }}>{f.status} {f.path}</span>)}
+                </div>
               </div>
             ) : null}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -88,11 +91,15 @@ export function PromoteModal() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                <span className="cap" style={{ marginRight: 6 }}>Server source</span>
+                <span className="cap" style={{ marginRight: 6 }}>App source · {review.files?.length ?? review.serverFiles?.length ?? 0} files</span>
                 {(review.serverFiles || []).map((f, i) => (
-                  <button key={f.path} className={`b${i === file ? '' : ' ghost'} mono`} style={{ height: 24, fontSize: 11 }} onClick={() => setFile(i)}>{f.path}</button>
+                  <button key={f.path} className={`b${i === file ? '' : ' ghost'} mono`} style={{ height: 24, fontSize: 11, ...(f.changed ? { color: '#FFD23F' } : {}) }} onClick={() => setFile(i)}>{f.changed ? '● ' : ''}{f.path}</button>
                 ))}
               </div>
+              {review.files && review.files.length > (review.serverFiles || []).length ? (
+                <span style={{ fontSize: 11.5, color: '#8A8F98' }}>Not previewed here: {review.files.filter((p) => !(review.serverFiles || []).some((f) => f.path === p)).join(', ')}</span>
+              ) : null}
+              {sf?.truncated ? <span style={{ fontSize: 11.5, color: '#8A8F98' }}>Preview truncated ({sf.size} bytes)</span> : null}
               {sf ? <pre className="mono scroll" style={{ margin: 0, background: '#0B0C0E', border: '1px solid #24272D', borderRadius: 10, padding: '10px 12px', fontSize: 11.5, lineHeight: 1.6, color: '#C9CCD2', maxHeight: 260, overflow: 'auto', userSelect: 'text' }}>{sf.content}</pre> : null}
             </div>
           </>

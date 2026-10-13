@@ -314,7 +314,11 @@ export interface Review {
   dirtyFiles: string[];
   tools: Record<string, ToolDecl>;
   lifecycle?: string;
-  serverFiles: { path: string; content: string }[];
+  /** every change Commit & pin would commit, recursively (status A/M/D + path relative to the app dir) */
+  changes?: { status: string; path: string }[];
+  /** every file of the reviewed app tree */
+  files?: string[];
+  serverFiles: { path: string; content: string; size?: number; truncated?: boolean; changed?: boolean }[];
   reviewHash: string;
 }
 

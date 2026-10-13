@@ -23,7 +23,8 @@
   },
   "ssh": {
     "bin": "ssh",
-    "identityFile": "~/.agent-hub/ssh/id_ed25519"
+    "identityFile": "~/.agent-hub/ssh/id_ed25519",
+    "maxExecs": 4
   },
   "hosts": [
     {
@@ -179,5 +180,12 @@
   "cloudPollIntervalSec": 30,
   "githubPollIntervalSec": 60,
   "metricsIntervalSec": 10,
-  "claudeLivenessIntervalSec": 60
+  "claudeLivenessIntervalSec": 60,
+  "retention": {
+    "messagesDays": 30,
+    "auditDays": 90,
+    "approvalsDays": 7,
+    "stateEndedDays": 7,
+    "intervalMin": 60
+  }
 }

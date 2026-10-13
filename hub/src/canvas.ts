@@ -16,7 +16,11 @@ const L = log('canvas');
 
 export interface CanvasCaller { kind: 'assistant' | 'agent' | 'external'; sessionId: string | null; label: string }
 export interface ViewNode { id: string; kind: string; title: string; parent: string | null; x: number; y: number; w: number; h: number; ex?: boolean }
-export interface ViewReport { at: number; mode: string; nodes: ViewNode[]; selected: string[]; focusId: string | null; visible?: { x: number; y: number; w: number; h: number } | null }
+export interface ViewReport {
+  at: number; mode: string; nodes: ViewNode[]; selected: string[]; focusId: string | null; visible?: { x: number; y: number; w: number; h: number } | null;
+  /** the reporting page is visible / has focus (older PWAs send neither: treated as visible) */
+  pageVisible: boolean; focused: boolean;
+}
 
 type Op =
   | { t: 'layout'; id: string; prev: Record<string, any> | null }
@@ -88,18 +92,25 @@ export class CanvasService {
   }
 
   // ------------------------------------------------------------ view reports from the PWA
-  report(clientId: string, r: Omit<ViewReport, 'at'>) {
+  report(clientId: string, r: Omit<ViewReport, 'at' | 'pageVisible' | 'focused'> & { pageVisible?: boolean; focused?: boolean }) {
     const nodes = (Array.isArray(r.nodes) ? r.nodes : []).slice(0, 2000).map((n) => ({
       id: String(n.id), kind: String(n.kind || ''), title: String(n.title || '').slice(0, 120), parent: n.parent ? String(n.parent) : null,
       x: Math.round(+n.x || 0), y: Math.round(+n.y || 0), w: Math.round(+n.w || 0), h: Math.round(+n.h || 0), ex: !!n.ex,
     }));
-    this.views.set(clientId.slice(0, 64), { at: Date.now(), mode: String(r.mode || ''), nodes, selected: (r.selected || []).map(String).slice(0, 500), focusId: r.focusId ? String(r.focusId) : null, visible: r.visible ?? null });
+    this.views.set(clientId.slice(0, 64), {
+      at: Date.now(), mode: String(r.mode || ''), nodes, selected: (r.selected || []).map(String).slice(0, 500), focusId: r.focusId ? String(r.focusId) : null, visible: r.visible ?? null,
+      pageVisible: r.pageVisible !== false, focused: !!r.focused,
+    });
     if (this.views.size > 20) this.views.delete([...this.views.entries()].sort((a, b) => a[1].at - b[1].at)[0][0]);
   }
-  /** the most recent report from any client */
+  /**
+   * The view the tools act on: reports from visible pages beat hidden ones, focused beats unfocused, then the most
+   * recent wins. PWAs report only on change, so a background tab can no longer take over by re-sending.
+   */
   view(): ViewReport | null {
+    const rank = (v: ViewReport) => (v.pageVisible ? 2 : 0) + (v.pageVisible && v.focused ? 1 : 0);
     let best: ViewReport | null = null;
-    for (const v of this.views.values()) if (!best || v.at > best.at) best = v;
+    for (const v of this.views.values()) if (!best || rank(v) > rank(best) || (rank(v) === rank(best) && v.at > best.at)) best = v;
     return best;
   }
   private box(id: string): { x: number; y: number; w: number; h: number } | null {

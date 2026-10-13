@@ -1,5 +1,6 @@
 // HTTP routes: PWA API, hook intake (local + cloud), hub MCP tool endpoint.
 import type { Ctx } from './ctx.js';
+import { inStateWhere } from './retention.js';
 import { Router, HttpError, json, closeSignal, HELD } from './http.js';
 import { parseHook } from './claude/payloads.js';
 import { cspHeader } from './apps/manifest.js';
@@ -37,7 +38,8 @@ export function routes(c: Ctx): Router {
     hosts: c.cfg.hosts.map((h) => c.hosts.row(h.id)),
     accounts: c.cfg.accounts.map((a) => ({ id: a.id, label: a.label || a.id, color: a.color || '#8A8F98', cloud: { claudeEnvironments: a.cloud?.claudeEnvironments || [], codexEnvironments: a.cloud?.codexEnvironments || [] } })),
     checkouts: c.db.all('SELECT * FROM checkout ORDER BY host_id, path').map((x) => c.repos.row(x)),
-    sessions: c.store.sessions(),
+    // ended sessions older than retention.stateEndedDays are left out (GET /api/sessions/archive lists them)
+    sessions: c.store.sessions(...inStateWhere(c.cfg.retention)),
     approvals: c.store.pendingApprovals(),
     nodes: c.apps.nodes(),
     layout: Object.fromEntries(c.db.all('SELECT * FROM layout').map((l) => [l.node_id, layoutEntry(l)])),
@@ -53,6 +55,15 @@ export function routes(c: Ctx): Router {
   }));
 
   // ------------------------------------------------------------- sessions
+  /** ended sessions no longer in /api/state, newest first (?before=<updated_at ms>&limit=) */
+  r.get('/api/sessions/archive', 'hub', (req) => {
+    const [where, cutoff] = inStateWhere(c.cfg.retention);
+    const before = Math.min(Number(req.query.get('before')) || cutoff, cutoff);
+    const limit = Math.max(1, Math.min(500, Number(req.query.get('limit')) || 100));
+    return c.db
+      .all(`SELECT * FROM session WHERE NOT (${where}) AND updated_at < ? ORDER BY updated_at DESC LIMIT ?`, cutoff, before, limit)
+      .map((x) => ({ ...x, meta: JSON.parse(x.meta || '{}') }));
+  });
   r.post('/api/sessions', 'hub', async (req) => {
     try {
       return await spawnSession(c, req.body || {});

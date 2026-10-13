@@ -59,9 +59,9 @@ export class ApiError extends Error {
   }
 }
 
-export async function request<T = any>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
+export async function request<T = any>(method: string, path: string, body?: unknown, opts: { keepalive?: boolean } = {}): Promise<ApiResponse<T>> {
   if (mock) return mock(method, path, body) as Promise<ApiResponse<T>>;
-  const init: RequestInit = { method, credentials: 'same-origin', headers: { accept: 'application/json' } };
+  const init: RequestInit = { method, credentials: 'same-origin', headers: { accept: 'application/json' }, ...(opts.keepalive ? { keepalive: true } : {}) };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
     (init.headers as Record<string, string>)['content-type'] = 'application/json';
@@ -78,8 +78,8 @@ export async function request<T = any>(method: string, path: string, body?: unkn
   return { ok: res.ok, status: res.status, data };
 }
 
-async function call<T = any>(method: string, path: string, body?: unknown): Promise<T> {
-  const r = await request<T>(method, path, body);
+async function call<T = any>(method: string, path: string, body?: unknown, opts?: { keepalive?: boolean }): Promise<T> {
+  const r = await request<T>(method, path, body, opts);
   if (!r.ok) throw new ApiError(r.status, r.data);
   return r.data;
 }
@@ -93,6 +93,8 @@ export const api = {
     branch?: string; environment?: string; prompt: string; attempts?: number; model?: string; effort?: string;
   }) => call<Session>('POST', '/api/sessions', body),
   messages: (id: string) => call<Message[]>('GET', `/api/sessions/${enc(id)}/messages`),
+  /** ended sessions older than the hub's retention.stateEndedDays (not in /api/state), newest first */
+  sessionsArchive: (before?: number) => call<Session[]>('GET', `/api/sessions/archive?limit=100${before ? `&before=${before}` : ''}`),
   send: (id: string, text: string) => call('POST', `/api/sessions/${enc(id)}/send`, { text }),
   interrupt: (id: string) => call('POST', `/api/sessions/${enc(id)}/interrupt`, {}),
   settings: (id: string, s: { model?: string; effort?: string }) => call('POST', `/api/sessions/${enc(id)}/settings`, s),
@@ -145,7 +147,8 @@ export const api = {
   hilRerun: (runId: string) => call('POST', `/api/hil/runs/${enc(runId)}/rerun-failed`, {}),
   // canvas assistant
   assistantStart: (body: { hostId: string; accountId: string; prompt?: string }) => call<Session>('POST', '/api/assistant/start', body),
-  canvasView: (body: unknown) => call('POST', '/api/canvas/view', body),
+  /** keepalive: the report sent as the page is hidden (it may be unloading) */
+  canvasView: (body: unknown, opts?: { keepalive?: boolean }) => call('POST', '/api/canvas/view', body, opts),
   canvasUndo: (batchId: string) => call('POST', `/api/canvas/undo/${enc(batchId)}`, {}),
   closeTerminal: (id: string) => call('DELETE', `/api/terminals/${enc(id)}`),
 };

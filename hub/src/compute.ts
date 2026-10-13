@@ -188,6 +188,7 @@ export class ComputeService {
     const g = { id: `grant-${crypto.randomBytes(4).toString('hex')}`, session_id: o.sessionId, host_id: o.hostId, resources: o.resources, purpose: o.purpose, quota_gb: o.quotaGB ?? null, status: o.status, created_at: Date.now() };
     this.c.db.upsert('grant_', g);
     const v = this.grant(g.id)!;
+    this.grantUsage.set(v.id, v.usedGB);
     this.c.bus.publish('grant.upsert', v);
     if (o.status === 'requested') this.c.push.notify({ title: 'Compute requested', body: `${this.holderLabel(o.sessionId)} asks for ${o.resources} on ${o.hostId}: ${o.purpose}`, tag: g.id, url: `/?focus=${o.sessionId}` });
     return v;
@@ -196,11 +197,19 @@ export class ComputeService {
     if (!this.grant(gid)) throw new Error('unknown grant');
     this.c.db.run('UPDATE grant_ SET status=? WHERE id=?', status, gid);
     const v = this.grant(gid)!;
+    this.grantUsage.set(v.id, v.usedGB);
     this.c.bus.publish('grant.upsert', v);
     return v;
   }
+  /** last usedGB published per grant: a metrics tick republishes a grant only when its usage changed */
+  private grantUsage = new Map<string, number | null>();
   private updateGrantUsage(hostId: string, _m: Machine) {
-    for (const r of this.c.db.all("SELECT * FROM grant_ WHERE host_id=? AND status='active'", hostId)) this.c.bus.publish('grant.upsert', this.grantView(r));
+    for (const r of this.c.db.all("SELECT * FROM grant_ WHERE host_id=? AND status='active'", hostId)) {
+      const v = this.grantView(r)!;
+      if (this.grantUsage.has(v.id) && this.grantUsage.get(v.id) === v.usedGB) continue;
+      this.grantUsage.set(v.id, v.usedGB);
+      this.c.bus.publish('grant.upsert', v);
+    }
   }
 
   /** Agent runs a command on a granted host (its own user, its own cwd); output is returned and audited. */
@@ -209,7 +218,7 @@ export class ComputeService {
     if (!g || g.sessionId !== sessionId) throw new Error('no such grant for this session');
     if (g.status !== 'active') throw new Error(`grant is ${g.status}; it must be approved in the hub first`);
     const t0 = Date.now();
-    const r = await this.c.hosts.exec(g.hostId, `cd ${cwd ? rpath(cwd) : '"$HOME"'} && ${command}`, { timeoutMs: 10 * 60_000 });
+    const r = await this.c.hosts.exec(g.hostId, `cd ${cwd ? rpath(cwd) : '"$HOME"'} && ${command}`, { timeoutMs: 10 * 60_000, long: true });
     const out = (r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).slice(-20000);
     this.c.db.run('INSERT INTO audit (ts, app_node_id, tool, tier, caller, args, allowed, reason, result) VALUES (?,?,?,?,?,?,?,?,?)',
       Date.now(), grantId, '(run_on_host)', 'compute', `agent:${this.holderLabel(sessionId)}`, JSON.stringify({ host: g.hostId, command, cwd }), 1, `grant ${grantId} · exit ${r.code} · ${Date.now() - t0} ms`, out.slice(-1000));

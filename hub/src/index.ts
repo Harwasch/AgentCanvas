@@ -26,6 +26,7 @@ import { ComputeService } from './compute.js';
 import { HilService } from './hil.js';
 import { TerminalService } from './terminal.js';
 import { CanvasService } from './canvas.js';
+import { startRetention } from './retention.js';
 
 const L = log('hub');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -172,6 +173,7 @@ export async function main() {
   c.claude.recover(undefined, { startup: true }).catch((e) => L(`claude recover: ${e.message}`));
   c.codex.recover().catch((e) => L(`codex recover: ${e.message}`));
   c.claude.startLiveness();
+  const stopRetention = startRetention(db, cfg);
   // a host that was unreachable is back: reattach its sessions (nothing was ended while it was away)
   hosts.onOnline((h) => {
     c.claude.recover(h).catch((e) => L(`claude recover ${h}: ${e.message}`));
@@ -186,6 +188,7 @@ export async function main() {
     c.compute.stop();
     c.nodes.stop();
     c.claude.stopLiveness();
+    stopRetention();
     await c.apps.stop();
     store.flushStreams();
     hosts.stop();

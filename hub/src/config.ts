@@ -80,7 +80,8 @@ export interface HubConfig {
     codex: { bin: string; cloudBin: string };
     gh: { bin: string };
   };
-  ssh: { bin: string; identityFile?: string; extraArgs?: string[]; controlDir?: string };
+  /** maxExecs: short ssh execs run at once per host (the rest queue); long-lived channels (relays, tails, terminals) are not counted */
+  ssh: { bin: string; identityFile?: string; extraArgs?: string[]; controlDir?: string; maxExecs?: number };
   hosts: HostConfig[];
   accounts: AccountConfig[];
   screenshot: { chromiumPath?: string };
@@ -93,6 +94,12 @@ export interface HubConfig {
   claudeLivenessIntervalSec: number;
   /** auto-answer dev-channel warning / one-time Remote Control prompt in tmux */
   autoAnswerStartupPrompts: boolean;
+  /**
+   * How long the hub keeps history (days), pruned every `intervalMin`: messages of sessions that ended, audit rows,
+   * decided or expired approvals. Ended sessions older than `stateEndedDays` leave /api/state (still listed by
+   * /api/sessions/archive).
+   */
+  retention: { messagesDays: number; auditDays: number; approvalsDays: number; stateEndedDays: number; intervalMin: number };
   /** serve plain HTTP on a non-loopback address with a non-https publicUrl (tokens and cookies in clear text) */
   allowInsecureHttp?: boolean;
 }
@@ -123,7 +130,7 @@ const DEFAULTS: HubConfig = {
     codex: { bin: 'codex', cloudBin: 'codex' },
     gh: { bin: 'gh' },
   },
-  ssh: { bin: 'ssh' },
+  ssh: { bin: 'ssh', maxExecs: 4 },
   hosts: [],
   accounts: [],
   screenshot: {},
@@ -133,6 +140,7 @@ const DEFAULTS: HubConfig = {
   githubPollIntervalSec: 60,
   metricsIntervalSec: 10,
   claudeLivenessIntervalSec: 60,
+  retention: { messagesDays: 30, auditDays: 90, approvalsDays: 7, stateEndedDays: 7, intervalMin: 60 },
   autoAnswerStartupPrompts: true,
 };
 
@@ -151,6 +159,7 @@ export function loadConfig(file?: string): { config: HubConfig; file: string } {
     ssh: { ...DEFAULTS.ssh, ...(raw.ssh || {}) },
     screenshot: { ...DEFAULTS.screenshot, ...(raw.screenshot || {}) },
     push: { ...DEFAULTS.push, ...(raw.push || {}) },
+    retention: { ...DEFAULTS.retention, ...(raw.retention || {}) },
   };
   config.dataDir = expandHome(config.dataDir);
   if (config.tls) {

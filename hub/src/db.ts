@@ -1,5 +1,5 @@
 // SQLite state. Cheap to rebuild; never the only copy of a conversation.
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import path from 'node:path';
 
 const SCHEMA = `
@@ -89,14 +89,33 @@ export class Db {
       try { this.sql.exec(m); } catch { /* column already there */ }
     }
   }
+  /** prepared statements by SQL text; most queries are constants, the few built ones (upsert columns, where clauses) repeat too */
+  private stmts = new Map<string, StatementSync>();
+  static readonly STMT_CACHE = 256;
+  stmt(q: string): StatementSync {
+    let st = this.stmts.get(q);
+    if (st) {
+      // most recently used last: the oldest entry is evicted first
+      this.stmts.delete(q);
+      this.stmts.set(q, st);
+      return st;
+    }
+    st = this.sql.prepare(q);
+    this.stmts.set(q, st);
+    if (this.stmts.size > Db.STMT_CACHE) this.stmts.delete(this.stmts.keys().next().value!);
+    return st;
+  }
+  get cachedStatements() {
+    return this.stmts.size;
+  }
   all(q: string, ...p: any[]): Row[] {
-    return this.sql.prepare(q).all(...p) as Row[];
+    return this.stmt(q).all(...p) as Row[];
   }
   get(q: string, ...p: any[]): Row | undefined {
-    return this.sql.prepare(q).get(...p) as Row | undefined;
+    return this.stmt(q).get(...p) as Row | undefined;
   }
   run(q: string, ...p: any[]) {
-    return this.sql.prepare(q).run(...p);
+    return this.stmt(q).run(...p);
   }
   /** INSERT OR REPLACE-style upsert that only touches the provided columns. */
   upsert(table: string, row: Row, key = 'id') {

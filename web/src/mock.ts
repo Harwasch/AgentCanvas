@@ -346,6 +346,7 @@ export async function handle(method: string, path: string, body?: any): Promise<
   if (method === 'GET' && p === '/api/state') return ok(snapshot());
 
   if (method === 'POST' && p === '/api/sessions') return ok(createSession(body));
+  if (method === 'GET' && p === '/api/sessions/archive') return ok([]); // the demo has no sessions past retention
   // canvas assistant (Ask Claude)
   if (method === 'POST' && p === '/api/assistant/start') return ok(assistantStart(asst, body));
   if (method === 'POST' && p === '/api/canvas/view') { reportView(body); return ok(); }

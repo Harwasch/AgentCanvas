@@ -22,6 +22,34 @@ export function rpath(p: string): string {
   return q(p);
 }
 
+/** At most `max` tasks at once; the rest wait in FIFO order. */
+export class Limiter {
+  private active = 0;
+  private queue: (() => void)[] = [];
+  constructor(public max: number) {}
+  get running() {
+    return this.active;
+  }
+  get waiting() {
+    return this.queue.length;
+  }
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.max) await new Promise<void>((r) => this.queue.push(r));
+    else this.active++;
+    try {
+      return await fn();
+    } finally {
+      // hand the slot straight to the next waiter (active stays the same), or free it
+      const next = this.queue.shift();
+      if (next) next();
+      else this.active--;
+    }
+  }
+}
+
+/** sshd refused a channel on the shared connection: too many sessions for its MaxSessions */
+export const CHANNEL_REFUSED = /channel \d+: open failed|administratively prohibited|open failed: .*prohibited/i;
+
 export interface ExecResult {
   code: number;
   stdout: string;
@@ -32,6 +60,9 @@ export class HostManager {
   private controlDir: string;
   private health = new Map<string, NodeJS.Timeout>();
   private onlineFns: ((hostId: string) => void)[] = [];
+  /** short execs per host share the ControlMaster's channels with long-lived relays and tails (sshd MaxSessions) */
+  private limiters = new Map<string, Limiter>();
+  private refusedAt = new Map<string, number>();
   constructor(private cfg: HubConfig, private db: Db, private bus: EventBus) {
     this.controlDir = expandHome(cfg.ssh.controlDir || path.join(cfg.dataDir, 'ssh-ctl'));
     fs.mkdirSync(this.controlDir, { recursive: true, mode: 0o700 });
@@ -71,8 +102,32 @@ export class HostManager {
     return a;
   }
 
-  /** Run a remote shell command and collect output. */
-  exec(hostId: string, cmd: string, opts: { input?: string; timeoutMs?: number } = {}): Promise<ExecResult> {
+  limiter(hostId: string): Limiter {
+    let l = this.limiters.get(hostId);
+    if (!l) this.limiters.set(hostId, (l = new Limiter(Math.max(1, this.cfg.ssh.maxExecs ?? 4))));
+    return l;
+  }
+
+  /** A clear log line (once a minute per host) when sshd refuses a new channel on the multiplexed connection. */
+  private noteRefused(hostId: string, stderr: string) {
+    const m = stderr.match(CHANNEL_REFUSED);
+    if (!m) return;
+    const now = Date.now();
+    if (now - (this.refusedAt.get(hostId) ?? 0) < 60_000) return;
+    this.refusedAt.set(hostId, now);
+    L(`WARNING ${hostId}: sshd refused a new channel ("${m[0]}"). Each Claude session holds 2 channels on the shared connection; raise MaxSessions in the host's sshd_config (64 recommended, see README "Hosts") or lower ssh.maxExecs.`);
+  }
+
+  /**
+   * Run a remote shell command and collect output, queued behind ssh.maxExecs others on this host. `long`: a command
+   * that may run for minutes (an agent's run_on_host) takes no slot, so it cannot starve health checks and scans.
+   */
+  exec(hostId: string, cmd: string, opts: { input?: string; timeoutMs?: number; long?: boolean } = {}): Promise<ExecResult> {
+    if (opts.long) return this.execNow(hostId, cmd, opts);
+    return this.limiter(hostId).run(() => this.execNow(hostId, cmd, opts));
+  }
+
+  private execNow(hostId: string, cmd: string, opts: { input?: string; timeoutMs?: number }): Promise<ExecResult> {
     const h = this.host(hostId);
     return new Promise((resolve) => {
       const p = spawn(this.cfg.ssh.bin, [...this.sshArgs(h), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -83,6 +138,7 @@ export class HostManager {
       const t = setTimeout(() => p.kill('SIGKILL'), opts.timeoutMs ?? 30000);
       p.on('close', (code) => {
         clearTimeout(t);
+        if (code) this.noteRefused(hostId, stderr);
         resolve({ code: code ?? -1, stdout, stderr });
       });
       p.on('error', (e) => {
@@ -101,8 +157,12 @@ export class HostManager {
     return r.stdout;
   }
 
-  /** Run a remote command and return raw stdout bytes (file contents). */
+  /** Run a remote command and return raw stdout bytes (file contents); queued like exec(). */
   execBuf(hostId: string, cmd: string, opts: { timeoutMs?: number; maxBytes?: number } = {}): Promise<{ code: number; stdout: Buffer; stderr: string }> {
+    return this.limiter(hostId).run(() => this.execBufNow(hostId, cmd, opts));
+  }
+
+  private execBufNow(hostId: string, cmd: string, opts: { timeoutMs?: number; maxBytes?: number }): Promise<{ code: number; stdout: Buffer; stderr: string }> {
     const h = this.host(hostId);
     const max = opts.maxBytes ?? 32 * 1024 * 1024;
     return new Promise((resolve) => {
@@ -120,6 +180,7 @@ export class HostManager {
       p.on('error', (e) => (stderr += String(e)));
       p.on('close', (code) => {
         clearTimeout(t);
+        if (code) this.noteRefused(hostId, stderr);
         resolve({ code: n > max ? -2 : code ?? -1, stdout: Buffer.concat(chunks), stderr: n > max ? `output larger than ${max} bytes` : stderr });
       });
     });
@@ -140,6 +201,7 @@ export class HostManager {
   /** A spawn failure or a write after the remote end closed (EPIPE) is logged, never thrown at the hub; 'close' still fires. */
   private guard(hostId: string, p: ChildProcess): ChildProcess {
     p.on('error', (e) => L(`${hostId} ssh: ${e.message}`));
+    p.stderr?.on('data', (d) => this.noteRefused(hostId, String(d)));
     for (const s of [p.stdin, p.stdout, p.stderr]) s?.on('error', (e) => L(`${hostId} ssh stream: ${e.message}`));
     return p;
   }

@@ -25,6 +25,8 @@ export interface AppManifest {
   csp: { connect: string[]; img: string[] };
   tools: Record<string, ToolPolicy>;
   node: { width: number; height: number };
+  /** host-local device ids this app drives; actuate calls need the device lock (see policy) */
+  devices: string[];
 }
 
 export interface ValidationResult {
@@ -34,7 +36,7 @@ export interface ValidationResult {
   manifest?: AppManifest;
 }
 
-const TOP_KEYS = new Set(['$schema', 'id', 'title', 'version', 'runsOn', 'account', 'server', 'ui', 'uiFile', 'lifecycle', 'csp', 'tools', 'node', 'description']);
+const TOP_KEYS = new Set(['$schema', 'id', 'title', 'version', 'runsOn', 'account', 'server', 'ui', 'uiFile', 'lifecycle', 'csp', 'tools', 'node', 'description', 'devices']);
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const TOOL_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 const VERSION_RE = /^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/;
@@ -144,6 +146,13 @@ export function validateManifest(input: unknown): ValidationResult {
     }
   }
 
+  // devices
+  const devices: string[] = [];
+  if (m.devices !== undefined) {
+    if (!Array.isArray(m.devices) || !m.devices.every((d: any) => typeof d === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(d))) errors.push('devices: array of device ids');
+    else devices.push(...m.devices);
+  }
+
   if (errors.length) return { ok: false, errors, warnings };
   return {
     ok: true,
@@ -151,7 +160,7 @@ export function validateManifest(input: unknown): ValidationResult {
     warnings,
     manifest: {
       id: m.id, title: m.title, version: m.version, runsOn: m.runsOn, account: m.account, server, ui: m.ui, uiFile: m.uiFile,
-      lifecycle: server ? lifecycle : 'static', csp, tools, node,
+      lifecycle: server ? lifecycle : 'static', csp, tools, node, devices,
     },
   };
 }

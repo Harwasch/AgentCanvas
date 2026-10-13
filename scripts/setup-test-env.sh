@@ -64,7 +64,12 @@ cat > "$STUBS/bin/codex" <<EOF
 #!/bin/sh
 exec "$NODE_BIN" --no-warnings "$STUBS/lib/stub-codex.mjs" "\$@"
 EOF
-chmod -R a+rX "$STUBS"; chmod 755 "$STUBS/bin/"*
+cat > "$STUBS/bin/gh" <<EOF
+#!/bin/sh
+exec "$NODE_BIN" --no-warnings "$STUBS/lib/stub-gh.mjs" "\$@"
+EOF
+cp "$REPO/stubs/stub-nvidia-smi.sh" "$STUBS/bin/nvidia-smi"
+chmod -R a+rX "$STUBS"; chmod 755 "$STUBS/bin/"* "$STUBS/lib/"*.sh
 chmod a+rx "$(dirname "$NODE_BIN")" "$NODE_BIN"
 
 # --- demo repos with file:// remotes -----------------------------------------
@@ -83,8 +88,19 @@ mkrepo() { # name, seed-dir
 }
 mkrepo hexapod-robot
 mkrepo wpt-charger
+# hosts push to the "GitHub" remotes: one group for the stand-in host users
+getent group agenthub >/dev/null || groupadd agenthub
+usermod -aG agenthub hosta; usermod -aG agenthub hostb
+for r in "$GITSRV"/*.git; do
+  git --git-dir "$r" config core.sharedRepository group
+  chgrp -R agenthub "$r"; chmod -R g+rwX "$r"; find "$r" -type d -exec chmod g+s {} +
+done
 chmod -R a+rX "$GITSRV"
-git config --system --add safe.directory '*' 2>/dev/null || true
+git config --system --get-all safe.directory | grep -qx '\*' || git config --system --add safe.directory '*'
+# "GitHub" remotes resolve to the local bare repos (owners: personal = agent-hub-test, work = agent-hub-corp)
+git config --system --unset-all "url.file://$GITSRV/.insteadOf" 2>/dev/null || true
+git config --system --add "url.file://$GITSRV/.insteadOf" "https://github.com/agent-hub-test/"
+git config --system --add "url.file://$GITSRV/.insteadOf" "https://github.com/agent-hub-corp/"
 
 clone_for() { # user repo branch
   local u="$1" name="$2" br="$3" h; h="$(getent passwd "$u" | cut -d: -f6)"
@@ -99,6 +115,14 @@ clone_for() { # user repo branch
 }
 clone_for hosta hexapod-robot feat/winch-console
 clone_for hostb wpt-charger feat/coil-sweep
+sudo -u hosta git -C /home/hosta/code/hexapod-robot remote set-url origin https://github.com/agent-hub-test/hexapod-robot.git
+sudo -u hostb git -C /home/hostb/code/wpt-charger remote set-url origin https://github.com/agent-hub-corp/wpt-charger.git
+sudo -u hosta git -C /home/hosta/code/hexapod-robot push -q origin feat/winch-console || true
+sudo -u hostb git -C /home/hostb/code/wpt-charger push -q origin feat/coil-sweep || true
+
+# simulated bench hardware (marker files the declared devices probe for)
+sudo -u hosta mkdir -p /home/hosta/.sim && sudo -u hosta touch /home/hosta/.sim/stlink /home/hosta/.sim/pcan
+sudo -u hostb mkdir -p /home/hostb/.sim && sudo -u hostb touch /home/hostb/.sim/psu
 
 # --- per-account vendor profile dirs on hosts (stub "logins") ------------------
 for u in hosta hostb; do
@@ -114,7 +138,21 @@ for a in personal work; do
   install -d -o "$HUB_USER" "$DATA/profiles/$a/claude" "$DATA/profiles/$a/codex" "$DATA/profiles/$a/scratch"
   echo "{\"stubLogin\":\"$a\"}" > "$DATA/profiles/$a/claude/.stub-auth.json"
   echo "{\"stubLogin\":\"$a\"}" > "$DATA/profiles/$a/codex/.stub-auth.json"
+  install -d -o "$HUB_USER" "$DATA/profiles/$a/gh"
+  printf 'github.com:\n    user: %s-gh\n    git_protocol: https\n' "$a" > "$DATA/profiles/$a/gh/hosts.yml"
 done
+# PR + CI fixtures for the stub gh (the real gh reads these from GitHub)
+cat > "$DATA/profiles/personal/gh/stub-github.json" <<'JSON'
+{ "pulls": { "agent-hub-test/hexapod-robot": [
+  { "number": 18, "title": "Winch console + bench tests", "state": "open", "draft": true, "head": "feat/winch-console", "base": "main",
+    "reviews": ["COMMENTED", "APPROVED"],
+    "checks": [ { "name": "build", "conclusion": "success" }, { "name": "unit-tests", "conclusion": "success" }, { "name": "hil-sim", "status": "in_progress" } ] } ] } }
+JSON
+cat > "$DATA/profiles/work/gh/stub-github.json" <<'JSON'
+{ "pulls": { "agent-hub-corp/wpt-charger": [
+  { "number": 6, "title": "Coil v3 turn-count sweep", "state": "open", "head": "feat/coil-sweep", "base": "main",
+    "reviews": ["APPROVED", "APPROVED"], "checks": [ { "name": "build", "conclusion": "success" }, { "name": "fea-smoke", "conclusion": "failure" } ] } ] } }
+JSON
 
 # --- hub config --------------------------------------------------------------
 mkdir -p "$REPO/config"
@@ -128,28 +166,43 @@ cat > "$REPO/config/hub.config.json" <<EOF
   "dataDir": "$DATA",
   "adapters": {
     "claude": { "bin": "$STUBS/bin/claude", "cloudBin": "$STUBS/bin/claude" },
-    "codex":  { "bin": "$STUBS/bin/codex",  "cloudBin": "$STUBS/bin/codex" }
+    "codex":  { "bin": "$STUBS/bin/codex",  "cloudBin": "$STUBS/bin/codex" },
+    "gh":     { "bin": "$STUBS/bin/gh" }
   },
   "ssh": { "bin": "ssh", "identityFile": "$DATA/ssh/id_ed25519" },
   "hosts": [
-    { "id": "mini-1", "label": "mini-1", "target": "hosta@localhost", "color": "#43D1B0", "roots": ["~/code"] },
-    { "id": "mini-2", "label": "mini-2", "target": "hostb@localhost", "color": "#A6E15A", "roots": ["~/code"] }
+    { "id": "mini-1", "label": "mini-1", "target": "hosta@localhost", "color": "#43D1B0", "roots": ["~/code"],
+      "devices": [
+        { "id": "stlink", "title": "ST-LINK V3SET (sim)", "kind": "Debug probe · SWD 24 MHz", "icon": "SWD", "port": "/dev/ttyACM0 (simulated)", "fw": "probe fw V3J15", "probe": "test -e ~/.sim/stlink" },
+        { "id": "leg-pcba", "parentId": "stlink", "title": "Leg actuator PCBA rev A (sim)", "kind": "STM32G474 · bench rig #1", "icon": "DUT", "port": "via ST-LINK", "probe": "test -e ~/.sim/stlink" },
+        { "id": "pcan", "title": "PCAN-USB FD (sim)", "kind": "USB-CAN interface", "icon": "CAN", "port": "can0 · 1 Mbit/s", "probe": "test -e ~/.sim/pcan" },
+        { "id": "winch", "title": "Winch drive (simulated)", "kind": "served by apps/winch-console", "icon": "SER", "port": "stdio sim", "probe": "pgrep -f 'winch-console/serve[r].py' >/dev/null" }
+      ],
+      "hil": [
+        { "id": "actuator-vv", "title": "Actuator V&V · T-01…T-12", "command": "$STUBS/lib/sim-hil.sh", "cwd": "~", "devices": ["stlink", "pcan", "leg-pcba"],
+          "plan": "SYS/vv/actuator_test_plan.md", "setup": ["mini-1", "PCAN-USB FD", "leg CAN bus", "actuator PCBA", "ST-LINK (flash)"] }
+      ] },
+    { "id": "mini-2", "label": "mini-2", "target": "hostb@localhost", "color": "#A6E15A", "roots": ["~/code"],
+      "bins": { "nvidiaSmi": "$STUBS/bin/nvidia-smi" },
+      "devices": [ { "id": "psu", "title": "Bench PSU (sim)", "kind": "SCPI over LAN", "icon": "LAN", "port": "127.0.0.1:5025", "fw": "48.0 V · 2.1 A", "probe": "test -e ~/.sim/psu" } ] }
   ],
   "accounts": [
     { "id": "personal", "label": "Personal", "color": "#6AA8FF",
       "claude": { "configDir": "~/.claude-personal" }, "codex": { "home": "~/.codex" },
-      "git": { "name": "Personal", "email": "me@example.com" }, "gh": { "hostAlias": "github.com-personal" },
+      "git": { "name": "Personal", "email": "me@example.com" }, "gh": { "configDir": "$DATA/profiles/personal/gh", "owners": ["agent-hub-test"] },
       "hub": { "claudeConfigDir": "$DATA/profiles/personal/claude", "codexHome": "$DATA/profiles/personal/codex", "scratchDir": "$DATA/profiles/personal/scratch" },
       "cloud": { "claudeEnvironments": [{ "id": "default", "label": "Default" }], "codexEnvironments": [{ "id": "env_hexapod", "label": "hexapod-ci" }] } },
     { "id": "work", "label": "Work", "color": "#E0896B",
       "claude": { "configDir": "~/.claude-work" }, "codex": { "home": "~/.codex-work" },
-      "git": { "name": "Work", "email": "me@company.example" }, "gh": { "hostAlias": "github.com-work" },
+      "git": { "name": "Work", "email": "me@company.example" }, "gh": { "configDir": "$DATA/profiles/work/gh", "owners": ["agent-hub-corp"] },
       "hub": { "claudeConfigDir": "$DATA/profiles/work/claude", "codexHome": "$DATA/profiles/work/codex", "scratchDir": "$DATA/profiles/work/scratch" },
       "cloud": { "claudeEnvironments": [{ "id": "default", "label": "Default" }], "codexEnvironments": [{ "id": "env_work", "label": "work-ci" }] } }
   ],
   "screenshot": { "chromiumPath": "$(ls -d /opt/pw-browsers/chromium-*/chrome-linux/chrome 2>/dev/null | head -1)" },
   "repoIndexIntervalSec": 30,
-  "cloudPollIntervalSec": 3
+  "cloudPollIntervalSec": 3,
+  "githubPollIntervalSec": 10,
+  "metricsIntervalSec": 5
 }
 EOF
 chown "$HUB_USER" "$REPO/config/hub.config.json"

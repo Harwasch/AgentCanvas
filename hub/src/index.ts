@@ -18,6 +18,12 @@ import { Push } from './push.js';
 import { routes } from './api.js';
 import { createServer, cookies, bearer, safeEqual, json, type Auth, type Req } from './http.js';
 import type { Ctx } from './ctx.js';
+import { ProjectService } from './projects.js';
+import { FileService } from './files.js';
+import { NodeService } from './nodes.js';
+import { ComputeService } from './compute.js';
+import { HilService } from './hil.js';
+import { TerminalService } from './terminal.js';
 
 const L = log('hub');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -43,6 +49,16 @@ export async function main() {
   c.codex = new CodexDriver(c);
   c.cloud = new CloudService(c);
   c.apps = new AppService(c);
+  c.projects = new ProjectService(c);
+  c.files = new FileService(c);
+  c.nodes = new NodeService(c);
+  c.compute = new ComputeService(c);
+  c.hil = new HilService(c);
+  c.terminals = new TerminalService(c);
+  // a session that ends gives back its device locks
+  bus.on('event', (ev: any) => {
+    if (ev.type === 'session.upsert' && ev.data.status === 'ended') c.compute.releaseAll(ev.data.id);
+  });
 
   const authCheck = (auth: Auth, req: Req) => {
     if (auth === 'none') return true;
@@ -72,8 +88,19 @@ export async function main() {
   server.on('upgrade', (req, socket, head) => {
     const u = new URL(req.url || '/', 'http://x');
     const tok = cookies(req).hub_token ?? u.searchParams.get('token') ?? '';
-    if (u.pathname !== '/api/events' || !safeEqual(tok, secrets.hubToken)) {
+    const term = u.pathname.match(/^\/api\/terminals\/([\w-]+)\/ws$/);
+    if ((u.pathname !== '/api/events' && !term) || !safeEqual(tok, secrets.hubToken)) {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      return;
+    }
+    // terminals: same-origin only (the cookie is SameSite=Strict; this also refuses cross-site socket hijacking)
+    if (term) {
+      const origin = req.headers.origin;
+      if (origin && origin !== new URL(cfg.publicUrl).origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => c.terminals.attach(term[1], ws));
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -97,6 +124,9 @@ export async function main() {
   c.repos.start();
   c.cloud.start();
   c.apps.start();
+  c.projects.start();
+  c.compute.start();
+  c.nodes.start();
   c.claude.recover().catch((e) => L(`claude recover: ${e.message}`));
   c.codex.recover().catch((e) => L(`codex recover: ${e.message}`));
 
@@ -104,6 +134,9 @@ export async function main() {
     L('shutting down');
     c.repos.stop();
     c.cloud.stop();
+    c.projects.stop();
+    c.compute.stop();
+    c.nodes.stop();
     await c.apps.stop();
     hosts.stop();
     server.close();

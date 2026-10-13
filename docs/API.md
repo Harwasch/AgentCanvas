@@ -69,3 +69,73 @@ Audit    { id, ts, app_node_id, tool, tier, caller, args, allowed, reason, resul
 
 ## PWA screenshot mode
 `/?shot=<appNodeId>` renders one app node alone at its manifest size (live iframe, no LOD) and sets `data-app-ready="1"` on it once the view sent `ui/notifications/initialized`. Playwright on the hub uses it for `screenshot_app` / `publish_app` thumbnails.
+
+---
+
+# v2: GitHub, branches, files, and the remaining node types
+
+## Snapshot additions (`GET /api/state`)
+`projects[]`, `branches[]`, `machines[]`, `devices[]`, `cnodes[]`, `todos[]`, `grants[]`, `hil: { plans[], runs[] }`.
+New event types (same `{seq,type,data,ts}` frames): `project.upsert`, `branch.upsert`, `branch.remove`, `machine.upsert`, `device.upsert`,
+`cnode.upsert`, `cnode.remove`, `todo.upsert`, `todo.remove`, `grant.upsert`, `hil.upsert` (a run).
+
+## Shapes
+```ts
+Project  { id /* repo id */, name, remoteUrl, gh: { owner, repo, account, url } | null, defaultBranch,
+           readme: string /* markdown, ≤ 20 KB */, stats: { files, commits, sizeMB, branches, sessions },
+           folders: { name, mb }[], checkouts: string[], updatedAt }
+Branch   { id /* `${projectId}#${name}` */, projectId, name, base: string|null, goal: string|null, createdBy: "hub"|"agent"|"other",
+           checkouts: string[] /* host worktrees on this branch */, head: string|null /* local head (first checkout) */,
+           pushed: boolean, remoteSha: string|null, aheadRemote, behindRemote, aheadBase, behindBase,
+           pr: { number, title, state: "open"|"draft"|"merged"|"closed", url, reviews: { approved, changesRequested, commented } } | null,
+           ci: { state: "success"|"failure"|"pending"|"none", total, passed, failed, url: string|null } | null,
+           commits: { sha, subject, author, at }[] /* last ≤ 8 on the branch */, apps: { path, id, title }[] /* found on the pushed branch */,
+           cloud: { sessionId?: string } | null /* claude/* or codex result branches */, updatedAt }
+Machine  { id /* host id, or "claude-cloud" | "codex-cloud" */, label, kind: "host"|"cloud", color, status: "online"|"offline"|"managed",
+           cpu: { pct, cores } | null, mem: { usedMB, totalMB } | null, gpu: { name, utilPct, memUsedMB, memTotalMB }[], load: number|null, updatedAt }
+Device   { id, hostId, parentId: string|null, title, kind, icon: "SWD"|"CAN"|"USB"|"SER"|"LAN"|"DUT"|"BUS"|"SSH",
+           port, fw, status: "connected"|"missing"|"reachable"|"busy"|"unknown", source: "declared"|"discovered",
+           lock: { sessionId, since } | null, updatedAt }
+Grant    { id, sessionId, hostId, resources, purpose, quotaGB: number|null, usedGB: number|null, status: "requested"|"active"|"revoked", createdAt }
+HilPlan  { id, title, hostId, devices: string[], plan: string|null /* doc path */, setup: string[] /* chain shown as a → b → c */ }
+HilRun   { id, planId, status: "running"|"passed"|"failed"|"aborted", pass, fail, left,
+           rows: { id, req, name, status: "pending"|"run"|"pass"|"fail"|"skip", durMs: number|null }[], log: string[] /* tail */,
+           startedBy /* "you" | session id */, startedAt, finishedAt: number|null }
+Todo     { id, scope: string|null /* project id */, text, src: "you" | string /* session id */, done: boolean,
+           dispatchedSessionId: string|null, createdAt }
+CNode    { id, type: "note"|"todos"|"htodo"|"suggest"|"review"|"file"|"terminal", parentId: string|null, data, createdBy: "you"|string, createdAt, updatedAt }
+  note     data { title, text }
+  todos    data { title, scope: projectId|null }                               // a to-do list; items are Todo rows with that scope
+  htodo    data { todoId }                                                     // agent-created to-do, child of the agent's session
+  suggest  data { title, prompt, rationale, vendor, hostId|null, accountId, branchId|null, status: "open"|"launched"|"dismissed", sessionId? }
+  review   data { sessionId, title, path, source: FileSource, sha, kind /* "Markdown · 3 charts" */, note, promoteTo|null,
+                  checklist: { text, done }[], comments: { id, author: "you"|"agent", text, at }[], status: "pending"|"approved"|"changes" }
+  file     data { source: FileSource, path, sha /* pinned commit */, blob, kind: "doc"|"image"|"code"|"model3d"|"pdf"|"text"|"binary",
+                  newer: { sha, subject, at } | null }
+  terminal data { hostId, cwd, mode: "shell"|"agent", sessionId|null, status: "open"|"closed" }
+FileSource = { kind: "checkout", checkoutId } | { kind: "github", projectId, ref }
+```
+Node parents for the canvas: project ← branch (by `projectId`) ← session (by `checkout_id`'s branch) ← review/suggest/htodo/app/grant/terminal (by `parentId`/`sessionId`);
+cluster ← machine ← device (by `hostId`/`parentId`) ← HIL plan (by `hostId`); `todos`/`note`/`file` cnodes may be free (`parentId:null`) or attached.
+"Agent reference chips" under a machine are derived from local sessions on that host (no API).
+
+## Commands
+- `POST /api/cnodes` `{ type: "note"|"todos"|"file"|"terminal", parentId?, data }` → CNode. For `file`: `data { source, path }` (hub pins the current commit). For `terminal`: `data { hostId, cwd?, sessionId? }`.
+- `POST /api/cnodes/:id` `{ data }` (shallow merge; e.g. note text, review checklist) · `DELETE /api/cnodes/:id`
+- `POST /api/cnodes/:id/latest` (file/review: re-pin to the newest commit that touched the path)
+- `POST /api/todos` `{ text, scope }` · `POST /api/todos/:id` `{ text?, done? }` · `DELETE /api/todos/:id`
+- `POST /api/todos/:id/dispatch` `{ vendor, where, accountId, checkoutId?, branchId? }` → Session (prompt = the to-do text)
+- `POST /api/suggestions/:id/launch` `{ vendor?, where?, accountId?, checkoutId? }` → Session · `POST /api/suggestions/:id/dismiss`
+- `POST /api/reviews/:id/decision` `{ decision: "approve"|"changes", note? }` (sent to the agent as a message) · `POST /api/reviews/:id/comments` `{ text }`
+- `GET  /api/files/list?source=<json FileSource>&q=` → `{ files: { path, kind }[] }` (≤ 2000)
+- `GET  /api/files/raw?source=<json>&path=&sha=` → raw bytes with a content type (text, images, STL, PDF). Never executed; served with `CSP: sandbox`.
+- `POST /api/branches` `{ projectId, checkoutId /* where to branch */, base, name, goal?, push?: boolean }` → Branch (git worktree on that host)
+- `POST /api/branches/:id/refresh` · `GET /api/branches/:id/files` (same as files/list with the branch's source)
+- `POST /api/devices/:id/lock` `{ sessionId | null }`
+- `POST /api/grants` `{ sessionId, hostId, resources, purpose, quotaGB? }` · `POST /api/grants/:id` `{ status: "active"|"revoked" }`
+- `POST /api/hil/:planId/run` · `POST /api/hil/runs/:id/abort` · `POST /api/hil/runs/:id/rerun-failed`
+- `DELETE /api/terminals/:id` (closes the shell) · `WS /api/terminals/:id/ws` — client→hub JSON text frames `{type:"input", data}` | `{type:"resize", cols, rows}`;
+  hub→client binary frames = raw terminal output (UTF-8). Backed by a tmux session on the host, so it survives reconnects.
+
+## Agent tools (hub MCP) added
+`request_review`, `suggest_followup`, `add_todo`, `list_devices`, `acquire_device`, `release_device`, `request_compute`, `run_on_host`, `run_hil`.

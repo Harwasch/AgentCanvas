@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
+import os from 'node:os';
 import { home, sleep, b62, readJson, writeJson, fireHooks } from './common.mjs';
 
 // ============================================================== Claude cloud
@@ -95,6 +96,31 @@ async function vm(id, why) {
   await sleep(1500);
   await fireHooks(settings, 'PostToolUse', { ...base, tool_name: 'Edit', tool_input: { file_path: `/home/user/${s.repo}/README.md` }, tool_response: { filePath: `/home/user/${s.repo}/README.md` }, tool_use_id: 'toolu_' + b62(20) }, 'Edit');
   await sleep(1500);
+  // results land on a pushed claude/* branch (and, for app tasks, an app the hub's repo scan finds there)
+  if (why === 'start' && s.remote) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stub-cloud-'));
+    const br = `claude/${s.task.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30)}`;
+    try {
+      const g = (...a) => execFileSync('git', a, { cwd: tmp, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'Claude', GIT_AUTHOR_EMAIL: 'noreply@anthropic.com', GIT_COMMITTER_NAME: 'Claude', GIT_COMMITTER_EMAIL: 'noreply@anthropic.com' } });
+      g('clone', '-q', '--branch', s.branch, s.remote, '.');
+      g('checkout', '-q', '-b', br);
+      fs.mkdirSync(path.join(tmp, 'AI', 'cloud'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'AI', 'cloud', `${id}.md`), `# Cloud session ${id}\n\nTask: ${s.task}\n\nDone in the (stub) cloud VM.\n`);
+      if (/\b(app|dashboard)\b/i.test(s.task)) {
+        fs.mkdirSync(path.join(tmp, 'apps', 'cloud-status'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, 'apps', 'cloud-status', 'app.json'), JSON.stringify({ id: 'cloud-status', title: 'Cloud status board', version: '0.1.0', ui: 'ui://cloud-status/main', uiFile: 'index.html', lifecycle: 'static' }, null, 2));
+        fs.writeFileSync(path.join(tmp, 'apps', 'cloud-status', 'index.html'), '<!doctype html><body style="background:#0B0C0E;color:#E7E8EA;font:13px system-ui">Built in a cloud session.</body>');
+      }
+      g('add', '-A');
+      g('commit', '-qm', `Cloud session ${id}: ${s.task.slice(0, 60)}`);
+      g('push', '-q', 'origin', br);
+      update({ resultBranch: br });
+    } catch (e) {
+      update({ pushError: String(e.message || e).slice(0, 300) });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
   const answer = why === 'start' ? `Done: worked on "${s.task.slice(0, 80)}" and pushed branch claude/${s.task.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30)}.` : `Follow-up handled: "${last.text.slice(0, 80)}".`;
   update({ status: 'idle', branchOut: `claude/${s.task.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30)}`, last: answer });
   await fireHooks(settings, 'Stop', { ...base, stop_hook_active: false, last_assistant_message: answer });

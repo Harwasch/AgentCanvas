@@ -125,3 +125,37 @@ export const CodexAdapter = {
   cloudDiffArgs: (id: string) => ['cloud', 'diff', id],
   cloudApplyArgs: (id: string) => ['cloud', 'apply', id],
 };
+
+// ---------------------------------------------------------------- GitHub (official `gh` CLI, one GH_CONFIG_DIR per account)
+export interface GhPull { number: number; title: string; state: 'open' | 'closed'; draft: boolean; merged_at: string | null; html_url: string; head: { ref: string; sha: string | null }; base: { ref: string } }
+
+export const GitHubAdapter = {
+  /** owner/repo from https://github.com/o/r(.git), git@github.com:o/r.git, ssh://git@github.com/o/r, or an ssh alias host github.com-<x> */
+  parseRemote(url: string | null | undefined): { owner: string; repo: string } | undefined {
+    if (!url) return undefined;
+    const m = url.match(/^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com(?:-[\w.-]+)?[:/])([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
+    return m ? { owner: m[1], repo: m[2] } : undefined;
+  },
+  api: (endpoint: string, raw = false) => ['api', endpoint, ...(raw ? ['-H', 'Accept: application/vnd.github.raw'] : [])],
+  repo: (o: string, r: string) => `repos/${o}/${r}`,
+  branches: (o: string, r: string) => `repos/${o}/${r}/branches?per_page=100`,
+  pulls: (o: string, r: string) => `repos/${o}/${r}/pulls?state=all&per_page=50&sort=updated&direction=desc`,
+  reviews: (o: string, r: string, n: number) => `repos/${o}/${r}/pulls/${n}/reviews?per_page=100`,
+  checkRuns: (o: string, r: string, sha: string) => `repos/${o}/${r}/commits/${sha}/check-runs?per_page=100`,
+  commits: (o: string, r: string, ref: string, n = 8, path?: string) => `repos/${o}/${r}/commits?sha=${encodeURIComponent(ref)}&per_page=${n}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
+  compare: (o: string, r: string, base: string, head: string) => `repos/${o}/${r}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+  tree: (o: string, r: string, ref: string) => `repos/${o}/${r}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+  contents: (o: string, r: string, path: string, ref: string) => `repos/${o}/${r}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`,
+  prState(p: GhPull): 'open' | 'draft' | 'merged' | 'closed' {
+    if (p.merged_at) return 'merged';
+    if (p.state === 'open') return p.draft ? 'draft' : 'open';
+    return 'closed';
+  },
+  ciState(runs: { status: string; conclusion: string | null }[]): { state: 'success' | 'failure' | 'pending' | 'none'; total: number; passed: number; failed: number } {
+    const total = runs.length;
+    const passed = runs.filter((r) => r.status === 'completed' && ['success', 'neutral', 'skipped'].includes(String(r.conclusion))).length;
+    const failed = runs.filter((r) => r.status === 'completed' && ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'].includes(String(r.conclusion))).length;
+    const state = !total ? 'none' : failed ? 'failure' : passed === total ? 'success' : 'pending';
+    return { state, total, passed, failed };
+  },
+};

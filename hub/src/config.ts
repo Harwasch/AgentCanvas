@@ -16,9 +16,34 @@ export interface HostConfig {
   /** directories scanned for git checkouts (depth 2), `~` allowed */
   roots?: string[];
   /** per-host override of vendor binary paths */
-  bins?: { claude?: string; codex?: string; python?: string; git?: string; tmux?: string };
+  bins?: { claude?: string; codex?: string; python?: string; git?: string; tmux?: string; nvidiaSmi?: string };
+  /** bench hardware on this host; status from `probe` (exit 0 = connected). ids are host-local. */
+  devices?: DeviceConfig[];
+  /** hardware-in-the-loop plans runnable on this host (output in the hub HIL line protocol) */
+  hil?: HilPlanConfig[];
   /** how app servers marked always-on are supervised: systemd-run --user, or a tmux-held ssh stdio session */
   appSupervisor?: 'ssh-stdio' | 'systemd-run';
+}
+
+export interface DeviceConfig {
+  id: string;
+  title: string;
+  kind?: string;
+  icon?: string;
+  port?: string;
+  fw?: string;
+  parentId?: string;
+  probe?: string;
+}
+
+export interface HilPlanConfig {
+  id: string;
+  title: string;
+  command: string;
+  cwd?: string;
+  devices?: string[];
+  plan?: string;
+  setup?: string[];
 }
 
 export interface AccountConfig {
@@ -29,7 +54,8 @@ export interface AccountConfig {
   codex?: { home?: string };
   git?: { name?: string; email?: string };
   /** gh / ssh host alias used for GitHub calls of this account */
-  gh?: { hostAlias?: string; tokenEnv?: string };
+  /** GitHub through the official `gh` CLI: GH_CONFIG_DIR on the hub (log in once with `gh auth login`), and the owners this account covers */
+  gh?: { configDir?: string; owners?: string[]; hostAlias?: string };
   /** profile dirs on the hub itself, used by cloud adapters */
   hub?: { claudeConfigDir?: string; codexHome?: string; scratchDir?: string };
   cloud?: {
@@ -52,6 +78,7 @@ export interface HubConfig {
   adapters: {
     claude: { bin: string; cloudBin: string };
     codex: { bin: string; cloudBin: string };
+    gh: { bin: string };
   };
   ssh: { bin: string; identityFile?: string; extraArgs?: string[]; controlDir?: string };
   hosts: HostConfig[];
@@ -60,6 +87,8 @@ export interface HubConfig {
   push: { subject: string };
   repoIndexIntervalSec: number;
   cloudPollIntervalSec: number;
+  githubPollIntervalSec: number;
+  metricsIntervalSec: number;
   /** auto-answer dev-channel warning / one-time Remote Control prompt in tmux */
   autoAnswerStartupPrompts: boolean;
 }
@@ -86,6 +115,7 @@ const DEFAULTS: HubConfig = {
   adapters: {
     claude: { bin: 'claude', cloudBin: 'claude' },
     codex: { bin: 'codex', cloudBin: 'codex' },
+    gh: { bin: 'gh' },
   },
   ssh: { bin: 'ssh' },
   hosts: [],
@@ -94,6 +124,8 @@ const DEFAULTS: HubConfig = {
   push: { subject: 'mailto:hub@localhost' },
   repoIndexIntervalSec: 60,
   cloudPollIntervalSec: 15,
+  githubPollIntervalSec: 60,
+  metricsIntervalSec: 10,
   autoAnswerStartupPrompts: true,
 };
 
@@ -107,6 +139,7 @@ export function loadConfig(file?: string): { config: HubConfig; file: string } {
     adapters: {
       claude: { ...DEFAULTS.adapters.claude, ...(raw.adapters?.claude || {}) },
       codex: { ...DEFAULTS.adapters.codex, ...(raw.adapters?.codex || {}) },
+      gh: { ...DEFAULTS.adapters.gh, ...(raw.adapters?.gh || {}) },
     },
     ssh: { ...DEFAULTS.ssh, ...(raw.ssh || {}) },
     screenshot: { ...DEFAULTS.screenshot, ...(raw.screenshot || {}) },

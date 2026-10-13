@@ -42,13 +42,14 @@ export class HostManager {
     return h;
   }
 
-  bin(hostId: string, name: 'claude' | 'codex' | 'python' | 'git' | 'tmux'): string {
+  bin(hostId: string, name: 'claude' | 'codex' | 'python' | 'git' | 'tmux' | 'nvidiaSmi'): string {
     const h = this.host(hostId);
     const o = h.bins?.[name];
     if (o) return o;
     if (name === 'claude') return this.cfg.adapters.claude.bin;
     if (name === 'codex') return this.cfg.adapters.codex.bin;
     if (name === 'python') return 'python3';
+    if (name === 'nvidiaSmi') return 'nvidia-smi';
     return name;
   }
 
@@ -96,6 +97,35 @@ export class HostManager {
     const r = await this.exec(hostId, cmd, opts);
     if (r.code !== 0) throw new Error(`[${hostId}] ${cmd.slice(0, 120)} → exit ${r.code}: ${r.stderr.trim().slice(0, 500)}`);
     return r.stdout;
+  }
+
+  /** Run a remote command and return raw stdout bytes (file contents). */
+  execBuf(hostId: string, cmd: string, opts: { timeoutMs?: number; maxBytes?: number } = {}): Promise<{ code: number; stdout: Buffer; stderr: string }> {
+    const h = this.host(hostId);
+    const max = opts.maxBytes ?? 32 * 1024 * 1024;
+    return new Promise((resolve) => {
+      const p = spawn(this.cfg.ssh.bin, [...this.sshArgs(h), '--', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks: Buffer[] = [];
+      let n = 0;
+      let stderr = '';
+      p.stdout.on('data', (d: Buffer) => {
+        n += d.length;
+        if (n > max) p.kill('SIGKILL');
+        else chunks.push(d);
+      });
+      p.stderr.on('data', (d) => (stderr += d));
+      const t = setTimeout(() => p.kill('SIGKILL'), opts.timeoutMs ?? 30000);
+      p.on('close', (code) => {
+        clearTimeout(t);
+        resolve({ code: n > max ? -2 : code ?? -1, stdout: Buffer.concat(chunks), stderr: n > max ? `output larger than ${max} bytes` : stderr });
+      });
+    });
+  }
+
+  /** Remote command with a PTY allocated on the host (terminals). */
+  spawnTty(hostId: string, cmd: string): ChildProcess {
+    const h = this.host(hostId);
+    return spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-tt']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] });
   }
 
   /** Long-lived remote process with stdio pipes (codex proxy, channel relay, app servers, tail -F). */

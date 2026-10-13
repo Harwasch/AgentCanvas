@@ -6,6 +6,8 @@ import { cspHeader } from './apps/manifest.js';
 import { AppError } from './apps/service.js';
 import type { Caller } from './apps/policy.js';
 import { log } from './events.js';
+import { routesV2 } from './api2.js';
+import { spawnSession } from './nodes.js';
 
 const L = log('api');
 
@@ -32,28 +34,23 @@ export function routes(c: Ctx): Router {
     nodes: c.apps.nodes(),
     layout: Object.fromEntries(c.db.all('SELECT * FROM layout').map((l) => [l.node_id, { x: l.x, y: l.y, w: l.w, h: l.h, collapsed: !!l.collapsed }])),
     config: { publicUrl: c.cfg.publicUrl, vapidPublicKey: c.push.publicKey },
+    projects: c.projects.projects(),
+    branches: c.projects.branches(),
+    machines: c.compute.listMachines(),
+    devices: c.compute.listDevices(),
+    cnodes: c.nodes.all(),
+    todos: c.nodes.todos(),
+    grants: c.compute.grants(),
+    hil: { plans: c.hil.plans(), runs: c.hil.runs() },
   }));
 
   // ------------------------------------------------------------- sessions
   r.post('/api/sessions', 'hub', async (req) => {
-    const b = req.body || {};
-    const vendor = need(b.vendor, 'vendor');
-    const accountId = need(b.accountId, 'accountId');
-    c.account(accountId);
-    if (b.where === 'cloud') {
-      const checkoutId = need(b.checkoutId, 'checkoutId');
-      const prompt = need(b.prompt, 'prompt');
-      if (vendor === 'claude') return c.cloud.startClaude({ accountId, checkoutId, branch: b.branch, environment: b.environment, prompt });
-      if (vendor === 'codex') return c.cloud.startCodex({ accountId, checkoutId, branch: b.branch, environment: need(b.environment, 'environment'), prompt, attempts: b.attempts ? Number(b.attempts) : undefined });
-      throw new HttpError(400, 'unknown vendor');
+    try {
+      return await spawnSession(c, req.body || {});
+    } catch (e: any) {
+      throw new HttpError(/required|unknown/.test(e.message) ? 400 : 500, e.message);
     }
-    const hostId = need(b.hostId, 'hostId');
-    const co = b.checkoutId ? c.repos.checkout(b.checkoutId) : undefined;
-    const cwd = co?.path ?? need(b.cwd, 'cwd or checkoutId');
-    const o = { hostId, accountId, cwd, checkoutId: co?.id ?? null, branch: co?.branch ?? b.branch ?? null, prompt: b.prompt, model: b.model, effort: b.effort };
-    if (vendor === 'claude') return c.claude.start(o);
-    if (vendor === 'codex') return c.codex.start(o);
-    throw new HttpError(400, 'unknown vendor');
   });
   r.get('/api/sessions/:id/messages', 'hub', async (req) => {
     const s = session(req.params.id);
@@ -285,6 +282,57 @@ export function routes(c: Ctx): Router {
           if (!out.ok) return err(`blocked by hub (${out.code}): ${out.reason}`);
           return out.result;
         }
+        // ---- v2 agent tools: canvas nodes, devices, compute, HIL
+        case 'request_review':
+        case 'suggest_followup':
+        case 'add_todo':
+        case 'acquire_device':
+        case 'release_device':
+        case 'request_compute':
+        case 'run_on_host':
+        case 'run_hil': {
+          if (!s) return err(`${tool} needs a session started from the hub (could not tell which session is calling)`);
+          if (tool === 'request_review') {
+            const n = await c.nodes.requestReview(s, { path: String(need(args.path, 'path')), title: args.title, note: args.note, promote_to: args.promote_to, checklist: Array.isArray(args.checklist) ? args.checklist : [], kind: args.kind });
+            return { content: [text(`review requested: node ${n.id} for ${n.data.path} @ ${String(n.data.sha).slice(0, 8)}. The user's decision (approve / request changes) will arrive as a message in this session.`)], structuredContent: { nodeId: n.id } };
+          }
+          if (tool === 'suggest_followup') {
+            const n = c.nodes.suggest(s, { title: String(need(args.title, 'title')), prompt: String(args.prompt || args.title), rationale: args.rationale, vendor: args.vendor, host: args.host, account: args.account });
+            return { content: [text(`suggestion ${n.id} placed on the canvas; the user can launch it as a new session`)], structuredContent: { nodeId: n.id } };
+          }
+          if (tool === 'add_todo') {
+            const n = c.nodes.agentTodo(s, String(need(args.text, 'text')), args.project);
+            return { content: [text(`to-do added (${n.data.todoId})`)], structuredContent: { todoId: n.data.todoId } };
+          }
+          if (tool === 'acquire_device' || tool === 'release_device') {
+            const dev = c.compute.resolveDevice(String(need(args.id, 'id')), s.host_id);
+            if (tool === 'acquire_device') {
+              const lock = c.compute.setLock(dev, s.id);
+              return { content: [text(`locked ${c.compute.device(dev)?.title ?? dev} for this session; release it when done`)], structuredContent: { device: dev, lock } };
+            }
+            const cur = c.compute.lockOf(dev);
+            if (cur && cur.sessionId !== s.id) return err(`you do not hold the lock on ${dev}`);
+            c.compute.setLock(dev, null);
+            return { content: [text(`released ${dev}`)] };
+          }
+          if (tool === 'request_compute') {
+            const g = c.compute.createGrant({ sessionId: s.id, hostId: String(need(args.host, 'host')), resources: String(args.resources || 'shell'), purpose: String(args.purpose || ''), quotaGB: args.quota_gb ?? null, status: 'requested' });
+            return { content: [text(`grant ${g.id} requested on ${g.hostId}; it becomes usable with run_on_host once the user approves it in the hub`)], structuredContent: { grantId: g.id, status: g.status } };
+          }
+          if (tool === 'run_on_host') {
+            const out = await c.compute.runOnHost(s.id, String(need(args.grant_id, 'grant_id')), String(need(args.command, 'command')), args.cwd);
+            return { content: [text(`exit ${out.exitCode}\n${out.output}`)], isError: out.exitCode !== 0, structuredContent: out };
+          }
+          const plan = c.hil.plans().find((p) => p.id === args.plan || p.id === `${s.host_id}:${args.plan}`);
+          if (!plan) return err(`unknown HIL plan ${args.plan}; plans: ${c.hil.plans().map((p) => p.id).join(', ') || 'none'}`);
+          const run = await c.hil.start(plan.id, s.id, Array.isArray(args.only) ? args.only : null);
+          return { content: [text(`HIL run ${run.id} started on ${plan.hostId} (${plan.title}); results will arrive as a message in this session`)], structuredContent: { runId: run.id } };
+        }
+        case 'list_devices': {
+          const devs = c.compute.listDevices().filter((d) => !s?.host_id || d.hostId === s.host_id || args.all);
+          const plans = c.hil.plans();
+          return { content: [text(JSON.stringify({ devices: devs.map((d) => ({ id: d.id, title: d.title, kind: d.kind, status: d.status, lock: d.lock })), hilPlans: plans.map((p) => ({ id: p.id, title: p.title, devices: p.devices })) }, null, 2))] };
+        }
         default:
           throw new HttpError(404, `unknown hub tool ${tool}`);
       }
@@ -294,5 +342,6 @@ export function routes(c: Ctx): Router {
     }
   });
 
+  routesV2(c, r);
   return r;
 }

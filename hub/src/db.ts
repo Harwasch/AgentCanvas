@@ -46,6 +46,30 @@ CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, app_node_id TEXT, tool TEXT, tier TEXT,
   caller TEXT, args TEXT, allowed INTEGER, reason TEXT, result TEXT
 );
+CREATE TABLE IF NOT EXISTS project (
+  id TEXT PRIMARY KEY, data TEXT, updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS branch (
+  id TEXT PRIMARY KEY, project_id TEXT, name TEXT, data TEXT, updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS branch_meta (
+  id TEXT PRIMARY KEY, base TEXT, goal TEXT, created_by TEXT, created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS cnode (
+  id TEXT PRIMARY KEY, type TEXT, parent_id TEXT, data TEXT, created_by TEXT, created_at INTEGER, updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS todo (
+  id TEXT PRIMARY KEY, scope TEXT, text TEXT, src TEXT, done INTEGER, dispatched_session_id TEXT, created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS device_lock (
+  device_id TEXT PRIMARY KEY, session_id TEXT, since INTEGER
+);
+CREATE TABLE IF NOT EXISTS grant_ (
+  id TEXT PRIMARY KEY, session_id TEXT, host_id TEXT, resources TEXT, purpose TEXT, quota_gb REAL, status TEXT, created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS hil_run (
+  id TEXT PRIMARY KEY, plan_id TEXT, data TEXT, started_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS push_sub (
   endpoint TEXT PRIMARY KEY, keys TEXT, created_at INTEGER
 );

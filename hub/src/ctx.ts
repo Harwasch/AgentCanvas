@@ -11,6 +11,12 @@ import type { CloudService } from './cloud.js';
 import type { RepoIndexer } from './repos.js';
 import type { AppService } from './apps/service.js';
 import type { Push } from './push.js';
+import type { ProjectService } from './projects.js';
+import type { FileService } from './files.js';
+import type { NodeService } from './nodes.js';
+import type { ComputeService } from './compute.js';
+import type { HilService } from './hil.js';
+import type { TerminalService } from './terminal.js';
 
 export interface Ctx {
   cfg: HubConfig;
@@ -26,5 +32,11 @@ export interface Ctx {
   repos: RepoIndexer;
   apps: AppService;
   push: Push;
+  projects: ProjectService;
+  files: FileService;
+  nodes: NodeService;
+  compute: ComputeService;
+  hil: HilService;
+  terminals: TerminalService;
   account(id: string): AccountConfig;
 }

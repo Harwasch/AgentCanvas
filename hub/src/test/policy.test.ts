@@ -58,3 +58,22 @@ test('rate limit per tool per node, sliding minute; refused calls do not consume
   // window slides
   assert.equal(decide(promoted, 'n', 'set_speed', { confirmed: true, now: now + 60_001 }, l).allowed, true);
 });
+
+test('device locks: agents must hold the lock; another holder blocks agents; the human is never blocked', () => {
+  const l = new RateLimiter();
+  const agent = { kind: 'agent' as const, id: 'cc-1' };
+  const user = { kind: 'user' as const, id: 'hub-user' };
+  const free = [{ device: 'mini-1:winch', title: 'Winch', holder: null }];
+  const mine = [{ device: 'mini-1:winch', title: 'Winch', holder: 'cc-1' }];
+  const other = [{ device: 'mini-1:winch', title: 'Winch', holder: 'cx-9', holderLabel: 'codex session "x"' }];
+  let d = decide(promoted, 'n', 'stop', { confirmed: true, now, caller: agent, locks: free }, l);
+  assert.equal(!d.allowed && d.code, 'locked');
+  d = decide(promoted, 'n', 'stop', { confirmed: true, now, caller: agent, locks: other }, l);
+  assert.equal(!d.allowed && d.code, 'locked');
+  assert.equal(decide(promoted, 'n', 'stop', { confirmed: true, now, caller: agent, locks: mine }, l).allowed, true);
+  const u = decide(promoted, 'n', 'stop', { confirmed: false, now, caller: user, locks: other }, l);
+  assert.equal(u.allowed, true);
+  assert.match(u.reason, /overrides lock/);
+  // locks never unlock what preview forbids
+  assert.equal(decide(preview, 'n', 'stop', { confirmed: true, now, caller: user, locks: mine }, l).allowed, false);
+});

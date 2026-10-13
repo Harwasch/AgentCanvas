@@ -323,6 +323,22 @@ async function turn(text, signal) {
     const r = await useTool('mcp__hub__publish_app', { path: 'apps/winch-console' }, signal, false);
     last = r && !r.isError ? `Published the winch console. ${r.text.split('\n')[0]}` : `publish_app failed: ${r?.text}`;
     await say(last, signal);
+  } else if (/\b(report|derating)\b/.test(low)) {
+    await say('Writing the thermal derating report and asking you to review it.', signal);
+    const rel = 'AI/reports/thermal_derating.md';
+    const body = `# Thermal derating — power stage rev B\n\nThe rev B stage holds full 30 A continuous up to 55 °C ambient. Above that, junction temperature of Q3/Q4 sets the limit; derating is linear to 18 A at 85 °C.\n\n![Board thermal map](../sim/gait/gait_sweep.png)\n\n| Part | Tj °C | Margin |\n|---|---|---|\n| Q3 | 138 | 12 |\n| Q4 | 141 | 9 |\n\nRecommendation: re-run with 2 oz outer copper before the heatsink change.\n`;
+    await useTool('Write', { file_path: path.join(cwd, rel), content: body }, signal, false);
+    if (signal.aborted) return interrupted();
+    await useTool('mcp__hub__request_review', { path: rel, title: 'Thermal derating analysis', note: 'check the charts before the heatsink spec changes', checklist: ['Axis units and labels are correct', 'Knee point matches bench data', '2 oz estimate is clearly marked'], promote_to: 'HW/power-rev-b/' }, signal, false);
+    await useTool('mcp__hub__suggest_followup', { title: 'Re-run thermal sim with 2 oz copper', prompt: 'Re-run the thermal simulation of the rev B power stage with 2 oz outer copper and compare against the 1 oz curve.', rationale: 'The 2 oz curve in the report is an estimate, not measured.' }, signal, false);
+    await useTool('mcp__hub__add_todo', { text: 'Order 2 oz copper sample boards' }, signal, false);
+    last = 'Report written; review requested, follow-up suggested, to-do added.';
+    await say(last, signal);
+  } else if (/\b(start|run) the (hil|bench)/.test(low)) {
+    await say('Starting the actuator V&V plan on the bench.', signal);
+    const r = await useTool('mcp__hub__run_hil', { plan: 'actuator-vv' }, signal, false);
+    last = r && !r.isError ? 'HIL run started; I will report when results arrive.' : `HIL could not start: ${r?.text}`;
+    await say(last, signal);
   } else if (/\b(run|test|bash|command|flash)\b/.test(low)) {
     await say('Running the test suite.', signal);
     const r = await useTool('Bash', { command: 'make test', description: 'Run the test suite' }, signal, true, 'Run the test suite');

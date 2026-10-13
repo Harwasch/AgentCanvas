@@ -4,6 +4,7 @@ import type { Ctx } from './ctx.js';
 import { q, rpath } from './ssh.js';
 import { j } from './db.js';
 import { log } from './events.js';
+import { GitHubAdapter } from './adapters.js';
 
 const L = log('repos');
 const SEP = '\u001e';
@@ -98,7 +99,7 @@ export class RepoIndexer {
       `printf '${SEP}'`,
       `git -C ${p} log -1 --format='%s%x1f%ct' 2>/dev/null`,
       `printf '${SEP}'`,
-      `git -C ${p} remote get-url origin 2>/dev/null`,
+      `git -C ${p} config --get remote.origin.url 2>/dev/null`, // as configured (not insteadOf-expanded)
       `printf '${SEP}'`,
       `for f in ${p}/apps/*/app.json; do [ -f "$f" ] && printf '%s\\t' "$f" && tr -d '\\n' < "$f" && echo; done; true`,
     ].join('; ');
@@ -108,7 +109,8 @@ export class RepoIndexer {
     const [subject, ct] = (log1 || '').trim().split('\u001f');
     const remoteUrl = (remote || '').trim() || null;
     const name = (remoteUrl || path).replace(/\.git$/, '').split(/[/:]/).pop() || path;
-    const repoId = remoteUrl ? remoteUrl.replace(/^(https?:\/\/|git@|file:\/\/)/, '').replace(/\.git$/, '').replace(':', '/') : `local:${hostId}:${path}`;
+    const gh = GitHubAdapter.parseRemote(remoteUrl);
+    const repoId = gh ? `github.com/${gh.owner}/${gh.repo}` : remoteUrl ? remoteUrl.replace(/^(https?:\/\/|git@|file:\/\/)/, '').replace(/\.git$/, '').replace(':', '/') : `local:${hostId}:${path}`;
     this.c.db.upsert('repo', { id: repoId, remote_url: remoteUrl, name });
     const apps: any[] = [];
     for (const line of (appsOut || '').split('\n').filter(Boolean)) {
@@ -123,6 +125,7 @@ export class RepoIndexer {
       ahead: st.ahead, behind: st.behind, dirty: st.changes.length, changes: st.changes, apps, updated_at: Date.now(),
     });
     this.c.bus.publish('checkout.upsert', this.checkout(id));
+    this.c.projects?.touch(repoId);
   }
 
   async files(id: string) {

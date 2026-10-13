@@ -7,7 +7,7 @@ HUB_USER="${HUB_USER:-${SUDO_USER:-root}}"
 HUB_HOME="$(getent passwd "$HUB_USER" | cut -d: -f6)"
 DATA="${HUB_DATA_DIR:-$HUB_HOME/.agent-hub}"
 
-pkill -f "hub/dist/index.js" 2>/dev/null
+pkill -f "^[^ ]*node .*hub/dist/index.js" 2>/dev/null
 for u in hosta hostb; do
   h="$(getent passwd "$u" | cut -d: -f6)"
   sudo -u "$u" tmux kill-server 2>/dev/null
@@ -26,6 +26,19 @@ for u in hosta hostb; do
       echo '- [ ] scratch note (uncommitted)' >> \"\$r/NOTES.md\"
     done
   "
+done
+# "GitHub" remotes: keep main and the two feature branches (reset to main), drop everything pushed since
+for r in /srv/agent-hub-git/*.git; do
+  [ -d "$r" ] || continue
+  git --git-dir "$r" for-each-ref --format='%(refname:short)' refs/heads | while read -r b; do
+    case "$b" in main) ;; feat/winch-console|feat/coil-sweep) git --git-dir "$r" update-ref "refs/heads/$b" refs/heads/main ;; *) git --git-dir "$r" update-ref -d "refs/heads/$b" ;; esac
+  done
+done
+for u in hosta hostb; do
+  h="$(getent passwd "$u" | cut -d: -f6)"
+  rm -rf "$h"/code/*.worktrees
+  for r in "$h"/code/*/; do sudo -u "$u" git -C "$r" worktree prune 2>/dev/null; sudo -u "$u" git -C "$r" fetch -q --prune origin 2>/dev/null; done
+  rm -f "$h/.sim/gpu-load"
 done
 rm -f "$DATA"/hub.sqlite*
 rm -rf "$DATA/apps" "$DATA/ssh-ctl"

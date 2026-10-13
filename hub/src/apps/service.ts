@@ -62,7 +62,7 @@ export class AppService {
       state: r.state, version: r.version, pinnedCommit: r.pinned_commit, grantedVersion: r.granted_version, status: this.runtimes.get(r.id)?.status ?? r.status,
       errors: j(r.errors, []), url: `/api/apps/${r.id}/ui?v=${r.version}`, thumbnail: r.thumbnail ? `/api/apps/${r.id}/thumbnail.png?t=${r.updated_at}` : null,
       updatedAt: r.updated_at, previewOf: r.preview_of ?? null,
-      manifest: m ? { id: m.id, title: m.title, version: m.version, lifecycle: m.lifecycle, tools: m.tools, node: m.node, ui: m.ui, csp: m.csp } : null,
+      manifest: m ? { id: m.id, title: m.title, version: m.version, lifecycle: m.lifecycle, tools: m.tools, node: m.node, ui: m.ui, csp: m.csp, devices: m.devices || [] } : null,
     };
   }
 
@@ -254,10 +254,16 @@ export class AppService {
     const r = this.row(id);
     if (!r) return { ok: false, code: 'unknown', reason: 'unknown app node' };
     const node = { state: r.state, version: r.version, grantedVersion: r.granted_version, manifest: j<AppManifest>(r.manifest, null) } as any;
-    let d = decide(node, id, tool, { confirmed, now: Date.now() }, this.limiter);
+    const m = node.manifest as AppManifest;
+    const locks = (m?.devices || []).map((dv) => {
+      const full = `${r.host_id}:${dv}`;
+      const l = this.c.compute.lockOf(full);
+      return { device: full, title: this.c.compute.device(full)?.title, holder: l?.sessionId ?? null, holderLabel: l ? this.c.compute.holderLabel(l.sessionId) : undefined };
+    });
+    let d = decide(node, id, tool, { confirmed, now: Date.now(), caller, locks }, this.limiter);
     if (!d.allowed && d.code === 'needs_confirm' && caller.kind !== 'user') {
       const ok = await this.askConfirm(id, tool, args, caller);
-      if (ok) d = decide(node, id, tool, { confirmed: true, now: Date.now() }, this.limiter);
+      if (ok) d = decide(node, id, tool, { confirmed: true, now: Date.now(), caller, locks }, this.limiter);
     }
     if (!d.allowed) {
       this.audit(id, tool, d.tier ?? 'unknown', caller, args, false, d.reason, '');

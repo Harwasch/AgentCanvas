@@ -246,7 +246,7 @@ function TopBar({ phone }: { phone: boolean }) {
           <button className="b" style={{ height: 30, width: 34, padding: 0, justifyContent: 'center' }} aria-label="Menu" data-testid="menu-button" onClick={() => setPop(!pop)}><Icon name="menu" /></button>
         ) : <AccountChips onClick={() => setPop(!pop)} active={pop} />}
         {pop ? (
-          <div className="popover scroll" data-testid="settings-popover" style={{ right: 0, top: 42, width: phone ? 'calc(100vw - 24px)' : 360, maxHeight: 'calc(100vh - 80px)', overflow: 'auto', ...(phone ? { right: -54 } : {}) }}>
+          <div className="popover scroll" data-testid="settings-popover" style={phone ? { position: 'fixed', left: 12, right: 12, top: 56, maxHeight: 'calc(100vh - 80px)', overflow: 'auto' } : { right: 0, top: 42, width: 360, maxHeight: 'calc(100vh - 80px)', overflow: 'auto' }}>
             <SettingsPanel phone={phone} />
           </div>
         ) : null}

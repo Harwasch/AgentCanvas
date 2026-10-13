@@ -49,7 +49,7 @@ function SpawnForm() {
     if (checkoutId && !coOptions.find((c) => c.id === checkoutId)) {
       const same = coOptions.find((c) => c.repo_id === checkouts[checkoutId]?.repo_id);
       setCheckoutId(same?.id || coOptions[0]?.id || '');
-    } else if (!checkoutId && coOptions[0] && !cloud) setCheckoutId(coOptions[0].id);
+    } else if (!checkoutId && coOptions[0]) setCheckoutId(coOptions[0].id);
   }, [coOptions, checkoutId, checkouts, cloud]);
   useEffect(() => { const c = checkouts[checkoutId]; if (c) setBranch(c.branch || ''); }, [checkoutId, checkouts]);
   const envs = useMemo(() => {
@@ -60,7 +60,8 @@ function SpawnForm() {
   useEffect(() => { if (!envs.find((e) => e.id === env)) setEnv(envs[0]?.id || ''); }, [envs, env]);
 
   const close = () => ui.set({ spawnOpen: false, spawnPreset: null });
-  const canSubmit = !!prompt.trim() && !!accountId && !busy && (cloud || !!where);
+  // cloud sessions need a repo (checkout) and Codex cloud needs an environment
+  const canSubmit = !!prompt.trim() && !!accountId && !busy && (cloud ? !!checkoutId && (vendor !== 'codex' || !!env) : !!where);
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -71,7 +72,7 @@ function SpawnForm() {
     try {
       const s = await api.createSession({
         vendor, where: cloud ? 'cloud' : 'host', hostId: cloud ? undefined : where, accountId,
-        checkoutId: checkoutId || undefined, cwd: !cloud && co ? co.path : undefined, branch: branch || undefined,
+        checkoutId: checkoutId || undefined, cwd: cloud ? undefined : co ? co.path : '~', branch: branch || undefined,
         environment: cloud ? env || undefined : undefined, prompt: prompt.trim(),
         attempts: cloud && vendor === 'codex' ? attempts : undefined,
       });
@@ -131,7 +132,7 @@ function SpawnForm() {
           </label>
           <label className="field">Repo / checkout
             <select className="sel mono" data-testid="spawn-checkout" value={checkoutId} onChange={(e) => setCheckoutId(e.target.value)}>
-              <option value="">{cloud ? '(none)' : '(no checkout · home dir)'}</option>
+              {!coOptions.length ? <option value="">{cloud ? '(no repo indexed)' : '(none · home dir)'}</option> : null}
               {coOptions.map((c) => <option key={c.id} value={c.id}>{c.repoName}{cloud ? '' : ` · ${c.path}`}</option>)}
             </select>
           </label>

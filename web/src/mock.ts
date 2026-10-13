@@ -431,12 +431,11 @@ export async function handle(method: string, path: string, body?: any): Promise<
         const co = state.checkouts.find((c) => c.host_id === node.hostId && c.apps.some((a) => a.dir === node.dir));
         if (co) {
           co.changes = co.changes.filter((c) => !c.path.startsWith(node.dir + '/'));
-          co.dirty = co.changes.length; co.head = commit; co.head_subject = `${node.appId}: pin v${node.version} for promotion`; co.ahead += 1;
+          co.dirty = co.changes.length; co.head = commit; co.head_time = new Date().toISOString(); co.head_subject = `${node.appId}: pin v${node.version} for promotion`; co.ahead += 1;
           emit('checkout.upsert', clone(co));
         }
       }
       const n = upd(state.nodes, nid, { state: 'promoted', pinnedCommit: commit, grantedVersion: body.grantActuate ? node.version : null }, 'node.upsert');
-      emit('toast', { text: `${node.title} v${node.version} promoted${body.grantActuate ? ' · actuate granted' : ''}`, level: 'info' });
       return ok(n);
     }
     if (act === 'reload') {

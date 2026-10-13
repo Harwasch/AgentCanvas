@@ -63,7 +63,7 @@ input, textarea, select { font-family: inherit; }
 .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* chrome */
-.topbar { position: absolute; left: 0; top: 0; right: 0; height: 52px; box-sizing: border-box; background: #0E0F12; display: flex; align-items: center; gap: 10px; padding: 0 16px; z-index: 50; }
+.topbar { position: absolute; left: 0; top: 0; right: 0; height: 52px; box-sizing: border-box; background: #0E0F12; display: flex; align-items: center; gap: 10px; padding: 0 16px; z-index: 60; }
 .tabstrip { position: absolute; left: 0; top: 52px; right: 0; height: 36px; box-sizing: border-box; background: #0E0F12; border-bottom: 1px solid #1E2025; display: flex; align-items: flex-end; gap: 2px; padding: 0 12px; z-index: 50; overflow-x: auto; overflow-y: hidden; }
 .bottombar { position: absolute; left: 16px; bottom: 16px; display: flex; gap: 10px; align-items: center; max-width: calc(100% - 32px); z-index: 40; }
 .pill { display: flex; align-items: center; gap: 2px; background: #121418; border: 1px solid #24272D; border-radius: 10px; padding: 3px; flex: none; }

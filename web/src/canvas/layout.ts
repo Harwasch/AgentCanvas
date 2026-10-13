@@ -151,35 +151,51 @@ export function autoLayout(mode: 'cluster' | 'columns', g: GraphInput, G: Graph)
   if (loose.length) groups.push({ co: null, sess: loose });
   groups.forEach((gr) => {
     const sess = sortSessions(gr.sess, coOrder);
-    const rows: { w: number; h: number }[] = [];
-    // measure rows via a scratch placement
-    const scratch: Record<string, Box> = {};
-    sess.forEach((s) => rows.push(placeRow(s, 0, 0, G, appsBySession[s.id] || [], scratch)));
-    const slotW = Math.max(SESSION_W, ...rows.map((r) => r.w));
-    const cols = sess.length > 1 ? 2 : 1;
-    const clusterW = Math.max(CHECKOUT_W, cols * slotW + (cols - 1) * 48);
+    // tree: checkout on top, sessions in rows of up to 4 beneath it, each
+    // session's apps stacked under it.
+    const PER_ROW = 4, SLOT_GAP = 40;
+    const slotW = (s: Session) => Math.max(G.byId[s.id].w, ...(appsBySession[s.id] || []).map((a) => G.byId[a.id].w));
+    const rows: Session[][] = [];
+    for (let i = 0; i < sess.length; i += PER_ROW) rows.push(sess.slice(i, i + PER_ROW));
+    const rowW = (r: Session[]) => r.reduce((acc, s) => acc + slotW(s), 0) + Math.max(0, r.length - 1) * SLOT_GAP;
+    const coApps = gr.co ? orphanApps.filter((a) => gr.co && a.hostId === gr.co.host_id && gr.co.apps?.some((p) => p.dir === a.dir)) : [];
+    const coW = gr.co ? G.byId[gr.co.id].w + coApps.reduce((acc, a) => acc + APP_GAP + G.byId[a.id].w, 0) : 0;
+    const clusterW = Math.max(coW, CHECKOUT_W, ...rows.map(rowW));
     let y = 0;
     if (gr.co) {
       const n = G.byId[gr.co.id];
-      pos[gr.co.id] = { x: x + (clusterW - n.w) / 2, y, w: n.w, h: n.h };
-      let ay = y;
-      orphanApps.filter((a) => gr.co && a.hostId === gr.co.host_id && gr.co.apps?.some((p) => p.dir === a.dir) && !pos[a.id]).forEach((a) => {
+      let cx = x + (clusterW - coW) / 2;
+      pos[gr.co.id] = { x: cx, y, w: n.w, h: n.h };
+      let hMax = n.h;
+      cx += n.w;
+      coApps.forEach((a) => {
         const an = G.byId[a.id];
-        pos[a.id] = { x: x + (clusterW + n.w) / 2 + APP_GAP, y: ay, w: an.w, h: an.h };
-        ay += an.h + GAP_Y;
+        pos[a.id] = { x: cx + APP_GAP, y, w: an.w, h: an.h };
+        cx += APP_GAP + an.w;
+        hMax = Math.max(hMax, an.h);
       });
-      y += n.h + 90;
+      y += hMax + 90;
     }
-    for (let i = 0; i < sess.length; i += cols) {
+    rows.forEach((r) => {
+      let sx = x + (clusterW - rowW(r)) / 2;
       let rowH = 0;
-      for (let c = 0; c < cols && i + c < sess.length; c++) {
-        const r = placeRow(sess[i + c], x + c * (slotW + 48), y, G, appsBySession[sess[i + c].id] || [], pos);
-        rowH = Math.max(rowH, r.h);
-      }
-      y += rowH + GAP_Y + 10;
-    }
+      r.forEach((s) => {
+        const w = slotW(s);
+        const sn = G.byId[s.id];
+        pos[s.id] = { x: sx + (w - sn.w) / 2, y, w: sn.w, h: sn.h };
+        let ay = y + sn.h + GAP_Y;
+        (appsBySession[s.id] || []).forEach((a) => {
+          const an = G.byId[a.id];
+          pos[a.id] = { x: sx + (w - an.w) / 2, y: ay, w: an.w, h: an.h };
+          ay += an.h + GAP_Y;
+        });
+        rowH = Math.max(rowH, ay - y - GAP_Y);
+        sx += w + SLOT_GAP;
+      });
+      y += rowH + 70;
+    });
     headers.push({ key: gr.co ? gr.co.id : 'loose', label: gr.co ? gr.co.repoName : 'No checkout', color: gr.co ? computeColor(gr.co.host_id, g.hosts) : '#8A8F98', x, y: -46, w: clusterW, sub: gr.co ? computeName(gr.co.host_id, g.hosts) : '' });
-    x += clusterW + 160;
+    x += clusterW + 180;
   });
   let y = 0;
   G.nodes.forEach((n) => { if (!pos[n.id]) { pos[n.id] = { x, y, w: n.w, h: n.h }; y += n.h + GAP_Y; } });

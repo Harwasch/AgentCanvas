@@ -1,0 +1,15 @@
+{
+  "name": "agent-hub",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["hub", "web", "stubs"],
+  "scripts": {
+    "build": "npm run build -w hub && npm run build -w web",
+    "test": "npm test -w hub",
+    "start": "node hub/dist/index.js",
+    "setup:test-env": "sudo bash scripts/setup-test-env.sh",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "engines": { "node": ">=22.13" }
+}

@@ -1,0 +1,141 @@
+// Hub configuration: one JSON file, seeded into SQLite on start.
+// Every real-CLI path lives under `adapters` (or per-host `bins`), so swapping
+// the stubs for the vendor binaries is a config change only.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
+export interface HostConfig {
+  id: string;
+  label?: string;
+  /** ssh destination, e.g. "hub@minipc-a" (a Tailscale MagicDNS name in production) */
+  target: string;
+  port?: number;
+  color?: string;
+  /** directories scanned for git checkouts (depth 2), `~` allowed */
+  roots?: string[];
+  /** per-host override of vendor binary paths */
+  bins?: { claude?: string; codex?: string; python?: string; git?: string; tmux?: string };
+  /** how app servers marked always-on are supervised: systemd-run --user, or a tmux-held ssh stdio session */
+  appSupervisor?: 'ssh-stdio' | 'systemd-run';
+}
+
+export interface AccountConfig {
+  id: string;
+  label?: string;
+  color?: string;
+  claude?: { configDir?: string };
+  codex?: { home?: string };
+  git?: { name?: string; email?: string };
+  /** gh / ssh host alias used for GitHub calls of this account */
+  gh?: { hostAlias?: string; tokenEnv?: string };
+  /** profile dirs on the hub itself, used by cloud adapters */
+  hub?: { claudeConfigDir?: string; codexHome?: string; scratchDir?: string };
+  cloud?: {
+    claudeEnvironments?: { id: string; label: string; routineId?: string }[];
+    codexEnvironments?: { id: string; label: string }[];
+  };
+}
+
+export interface HubConfig {
+  listen: { host: string; port: number };
+  /** URL browsers use (tailscale serve name in production) */
+  publicUrl: string;
+  /** URL hosts use to POST hooks / MCP tool calls back to the hub */
+  hostCallbackUrl: string;
+  /** URL vendor clouds use for repo hooks (Funnel / tunnel); optional */
+  cloudCallbackUrl?: string;
+  /** null = plain HTTP (e.g. behind `tailscale serve`, which terminates TLS) */
+  tls: { cert: string; key: string; ca?: string } | null;
+  dataDir: string;
+  adapters: {
+    claude: { bin: string; cloudBin: string };
+    codex: { bin: string; cloudBin: string };
+  };
+  ssh: { bin: string; identityFile?: string; extraArgs?: string[]; controlDir?: string };
+  hosts: HostConfig[];
+  accounts: AccountConfig[];
+  screenshot: { chromiumPath?: string };
+  push: { subject: string };
+  repoIndexIntervalSec: number;
+  cloudPollIntervalSec: number;
+  /** auto-answer dev-channel warning / one-time Remote Control prompt in tmux */
+  autoAnswerStartupPrompts: boolean;
+}
+
+export interface Secrets {
+  hubToken: string;
+  hookToken: string;
+  cloudHookToken: string;
+  vapid?: { publicKey: string; privateKey: string };
+}
+
+export function expandHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+const DEFAULTS: HubConfig = {
+  listen: { host: '0.0.0.0', port: 8443 },
+  publicUrl: 'https://localhost:8443',
+  hostCallbackUrl: 'https://localhost:8443',
+  tls: null,
+  dataDir: '~/.agent-hub',
+  adapters: {
+    claude: { bin: 'claude', cloudBin: 'claude' },
+    codex: { bin: 'codex', cloudBin: 'codex' },
+  },
+  ssh: { bin: 'ssh' },
+  hosts: [],
+  accounts: [],
+  screenshot: {},
+  push: { subject: 'mailto:hub@localhost' },
+  repoIndexIntervalSec: 60,
+  cloudPollIntervalSec: 15,
+  autoAnswerStartupPrompts: true,
+};
+
+export function loadConfig(file?: string): { config: HubConfig; file: string } {
+  const f = path.resolve(file || process.env.HUB_CONFIG || 'config/hub.config.json');
+  const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const config: HubConfig = {
+    ...DEFAULTS,
+    ...raw,
+    listen: { ...DEFAULTS.listen, ...(raw.listen || {}) },
+    adapters: {
+      claude: { ...DEFAULTS.adapters.claude, ...(raw.adapters?.claude || {}) },
+      codex: { ...DEFAULTS.adapters.codex, ...(raw.adapters?.codex || {}) },
+    },
+    ssh: { ...DEFAULTS.ssh, ...(raw.ssh || {}) },
+    screenshot: { ...DEFAULTS.screenshot, ...(raw.screenshot || {}) },
+    push: { ...DEFAULTS.push, ...(raw.push || {}) },
+  };
+  config.dataDir = expandHome(config.dataDir);
+  if (config.tls) {
+    config.tls.cert = expandHome(config.tls.cert);
+    config.tls.key = expandHome(config.tls.key);
+  }
+  fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  return { config, file: f };
+}
+
+export function loadSecrets(dataDir: string): Secrets {
+  const f = path.join(dataDir, 'secrets.json');
+  let s: Partial<Secrets> = {};
+  if (fs.existsSync(f)) s = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const tok = () => crypto.randomBytes(24).toString('base64url');
+  const out: Secrets = {
+    hubToken: process.env.HUB_TOKEN || s.hubToken || tok(),
+    hookToken: s.hookToken || tok(),
+    cloudHookToken: s.cloudHookToken || tok(),
+    vapid: s.vapid,
+  };
+  fs.writeFileSync(f, JSON.stringify(out, null, 2), { mode: 0o600 });
+  return out;
+}
+
+export function saveSecrets(dataDir: string, s: Secrets) {
+  fs.writeFileSync(path.join(dataDir, 'secrets.json'), JSON.stringify(s, null, 2), { mode: 0o600 });
+}

@@ -1,0 +1,15 @@
+{
+  "id": "winch-console",
+  "title": "Winch console",
+  "version": "0.3.0",
+  "server": { "command": ["python3", "server.py"], "transport": "stdio" },
+  "ui": "ui://winch-console/main",
+  "lifecycle": "on-demand",
+  "csp": { "connect": [], "img": [] },
+  "tools": {
+    "read_status": { "tier": "read" },
+    "set_speed": { "tier": "actuate", "confirm": true, "maxPerMinute": 10 },
+    "stop": { "tier": "actuate", "confirm": false }
+  },
+  "node": { "width": 640, "height": 440 }
+}

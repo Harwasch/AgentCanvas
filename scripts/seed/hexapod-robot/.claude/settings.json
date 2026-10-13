@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "http", "url": "https://localhost:8443/hooks/cloud", "headers": { "Authorization": "Bearer $HUB_CLOUD_HOOK_TOKEN" }, "allowedEnvVars": ["HUB_CLOUD_HOOK_TOKEN"], "timeout": 10 }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "http", "url": "https://localhost:8443/hooks/cloud", "headers": { "Authorization": "Bearer $HUB_CLOUD_HOOK_TOKEN" }, "allowedEnvVars": ["HUB_CLOUD_HOOK_TOKEN"], "timeout": 10 }] }],
+    "Stop": [{ "hooks": [{ "type": "http", "url": "https://localhost:8443/hooks/cloud", "headers": { "Authorization": "Bearer $HUB_CLOUD_HOOK_TOKEN" }, "allowedEnvVars": ["HUB_CLOUD_HOOK_TOKEN"], "timeout": 10 }] }]
+  }
+}

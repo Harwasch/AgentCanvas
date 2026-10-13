@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Winch console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0B0C0E; color: #E7E8EA; font: 12.5px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .mono { font-family: ui-monospace, "Geist Mono", monospace; }
+  .cap { font-size: 10.5px; color: #8A8F98; letter-spacing: .04em; text-transform: uppercase; }
+  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .tile { background: #111215; border: 1px solid #24272D; border-radius: 8px; padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; }
+  .tile b { font: 500 15px ui-monospace, monospace; }
+  .card { background: #111215; border: 1px solid #24272D; border-radius: 9px; padding: 8px 10px; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; height: 30px; padding: 0 12px; border: 1px solid #2A2D33; background: #1A1C21; color: #E7E8EA; }
+  button:hover { background: #22252B; }
+  .estop { height: 34px; border-radius: 999px; padding: 0 16px; font-weight: 700; letter-spacing: .04em; border: 2px solid #FFB3B6; background: #C8323A; color: #fff; }
+  .badge { font-size: 10.5px; border-radius: 5px; padding: 2px 7px; border: 1px solid #2A2D33; }
+  .fault { border-color: #C8323A; color: #FFB3B6; background: #2a1215; }
+  input[type=range] { flex: 1; accent-color: #43D1B0; }
+  #msg { min-height: 18px; font-size: 11.5px; color: #A3A7AF; }
+  #msg.err { color: #FFB3B6; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <span class="cap">Simulated winch · drum 0</span>
+    <span id="state" class="badge mono">connecting…</span>
+    <span style="flex:1"></span>
+    <button class="estop" id="stop" title="stop is unconfirmed by design">STOP</button>
+  </div>
+  <div class="tiles">
+    <div class="tile"><span class="cap">Speed m/s</span><b id="speed">–</b></div>
+    <div class="tile"><span class="cap">Setpoint</span><b id="setpoint">–</b></div>
+    <div class="tile"><span class="cap">Paid out m</span><b id="paid">–</b></div>
+    <div class="tile"><span class="cap">Load kg</span><b id="load">–</b></div>
+  </div>
+  <div class="card">
+    <div class="row"><span class="cap" style="flex:1">Speed trace (12 s)</span><span class="mono" id="temp" style="color:#8A8F98"></span></div>
+    <svg id="trace" width="100%" height="90" viewBox="0 0 300 90" preserveAspectRatio="none" role="img" aria-label="speed trace">
+      <path d="M0 45 H300" stroke="#1E2025"/>
+      <polyline id="line" fill="none" stroke="#43D1B0" stroke-width="1.8" points=""/>
+    </svg>
+  </div>
+  <label class="row"><span style="width:110px">Speed setpoint</span>
+    <input type="range" id="sp" min="-1.5" max="1.5" step="0.1" value="0">
+    <span class="mono" id="spv" style="width:70px;text-align:right">0.0 m/s</span>
+    <button id="set">Set speed</button>
+  </label>
+  <div class="row"><span class="cap">Faults</span><span id="faults" class="row"></span></div>
+  <div id="msg"></div>
+<script>
+// Minimal hand-written MCP Apps view (no SDK): JSON-RPC 2.0 over postMessage to the host.
+let nextId = 1;
+const pending = new Map();
+const host = window.parent;
+function rpc(method, params) {
+  const id = nextId++;
+  host.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+}
+function notify(method, params) { host.postMessage({ jsonrpc: '2.0', method, params: params || {} }, '*'); }
+window.addEventListener('message', (e) => {
+  if (e.source !== host) return;
+  const m = e.data;
+  if (!m || typeof m !== 'object') return;
+  if (m.id != null && pending.has(m.id) && (m.result !== undefined || m.error)) {
+    const p = pending.get(m.id); pending.delete(m.id);
+    m.error ? p.reject(m.error) : p.resolve(m.result);
+  } else if (m.method === 'ui/resource-teardown' || m.method === 'ping') {
+    host.postMessage({ jsonrpc: '2.0', id: m.id, result: {} }, '*');
+  } else if (m.method === 'ui/notifications/tool-result') {
+    render(m.params && m.params.structuredContent);
+  }
+});
+const $ = (id) => document.getElementById(id);
+function say(t, err) { $('msg').textContent = t || ''; $('msg').className = err ? 'err' : ''; }
+function render(st) {
+  if (!st) return;
+  $('speed').textContent = st.speed.toFixed(2);
+  $('setpoint').textContent = st.setpoint.toFixed(2);
+  $('paid').textContent = st.paid_out.toFixed(1);
+  $('load').textContent = Math.round(st.load_kg);
+  $('temp').textContent = 'motor ' + st.motor_temp_c.toFixed(1) + ' °C';
+  const h = st.history || [];
+  $('line').setAttribute('points', h.map((v, i) => `${(i / 119) * 300},${45 - v * 26}`).join(' '));
+  $('faults').innerHTML = (st.faults.length ? st.faults : ['none']).map((f) => `<span class="badge mono ${f === 'none' ? '' : 'fault'}">${f}</span>`).join('');
+}
+async function callTool(name, args) {
+  try {
+    const r = await rpc('tools/call', { name, arguments: args || {} });
+    const t = (r.content || []).map((c) => c.text).join(' ');
+    if (r.isError) { say(t, true); return null; }
+    if (name !== 'read_status') say(t);
+    render(r.structuredContent);
+    return r;
+  } catch (e) { say((e && e.message) || String(e), true); return null; }
+}
+$('sp').addEventListener('input', () => { $('spv').textContent = Number($('sp').value).toFixed(1) + ' m/s'; });
+$('set').addEventListener('click', () => callTool('set_speed', { speed_mps: Number($('sp').value) }));
+$('stop').addEventListener('click', () => callTool('stop'));
+(async () => {
+  const init = await rpc('ui/initialize', { protocolVersion: '2026-01-26', appInfo: { name: 'winch-console', version: '0.3.0' }, appCapabilities: {} });
+  notify('ui/notifications/initialized');
+  $('state').textContent = (init.hostContext && init.hostContext.appState) || 'live';
+  const tick = async () => { await callTool('read_status'); setTimeout(tick, 1000); };
+  tick();
+  new ResizeObserver(() => notify('ui/notifications/size-changed', { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight })).observe(document.documentElement);
+})();
+</script>
+</body>
+</html>

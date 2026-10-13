@@ -1,0 +1,23 @@
+{
+  "name": "@agent-hub/hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test --no-warnings \"dist/test/*.test.js\"",
+    "dev": "tsc -w -p tsconfig.json"
+  },
+  "dependencies": {
+    "playwright-core": "1.56.1",
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}

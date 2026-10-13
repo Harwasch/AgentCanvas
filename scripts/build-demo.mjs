@@ -19,7 +19,9 @@ let js = fs.readFileSync(path.join(dist, jsFile), 'utf8').replace(/<\/script/gi,
 let css = cssFile ? fs.readFileSync(path.join(dist, cssFile), 'utf8') : '';
 css = css.replace(/url\((['"]?)(?:\.{0,2}\/)*fonts\/([^'")]+)\1\)/g, (_m, _q, f) => `url(data:font/woff2;base64,${fs.readFileSync(path.join(WEB, 'public', 'fonts', f)).toString('base64')})`);
 const banner = `<div id="demo-badge" style="position:fixed;left:16px;bottom:calc(68px + env(safe-area-inset-bottom,0px));z-index:9999;font:500 11.5px/1 system-ui,sans-serif;color:#0B0C0E;background:#FFD23F;border-radius:999px;padding:7px 11px;pointer-events:none">Demo · simulated hosts, agents and GitHub</div>`;
-const page = `<title>Agent Hub</title>
+const page = `<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent Hub</title>
 <meta name="color-scheme" content="dark">
 <style>:root{color-scheme:dark}html,body{background:#0B0C0E}
 ${css}</style>

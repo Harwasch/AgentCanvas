@@ -1,4 +1,6 @@
-/* Agent Hub service worker: app-shell cache + web push. Never caches /api/ or /hooks/. */
+/* Agent Hub service worker: app-shell cache + web push. Never caches /api/ or /hooks/.
+   Built assets have hashed names; whenever a new index.html arrives (install, activate, navigation) the cache keeps
+   only the /assets/ files it references (directly, or as chunks named inside those scripts) and drops the rest. */
 const CACHE = 'hub-shell-v1';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon.svg', '/fonts/Geist-latin.woff2', '/fonts/GeistMono-latin.woff2'];
 
@@ -13,6 +15,37 @@ async function precache() {
     // built assets referenced by index.html (hashed names)
     const assets = Array.from(html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)).map((m) => m[1]);
     await Promise.all([...SHELL.slice(1), ...assets].map((u) => cache.add(u).catch(() => undefined)));
+    await prune(html).catch(() => undefined);
+  }
+}
+
+/** /assets/ paths the given index.html needs: its tags, plus chunks the entry scripts import (followed a few levels) */
+async function referenced(cache, html) {
+  const keep = new Set(Array.from(html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)).map((m) => m[1]));
+  const queue = [...keep].filter((u) => u.endsWith('.js'));
+  for (let i = 0; i < queue.length && i < 60; i++) {
+    const res = (await cache.match(queue[i])) || (await fetch(queue[i]).catch(() => null));
+    if (!res || !res.ok) continue;
+    const js = await res.clone().text();
+    for (const m of js.matchAll(/["'`](?:\.\/|\/?assets\/)([\w.-]+\.(?:js|css))["'`]/g)) {
+      const u = `/assets/${m[1]}`;
+      if (!keep.has(u)) {
+        keep.add(u);
+        if (u.endsWith('.js')) queue.push(u);
+      }
+    }
+  }
+  return keep;
+}
+
+/** drop cached /assets/ files the current index.html no longer references (old hashed builds) */
+async function prune(html) {
+  const cache = await caches.open(CACHE);
+  const keep = await referenced(cache, html);
+  if (!keep.size) return; // not a built index.html: keep everything
+  for (const req of await cache.keys()) {
+    const p = new URL(req.url).pathname;
+    if (p.startsWith('/assets/') && !keep.has(p)) await cache.delete(req);
   }
 }
 
@@ -42,7 +75,9 @@ self.addEventListener('fetch', (event) => {
         const res = await fetch(req);
         if (res.ok && url.pathname === '/') {
           const cache = await caches.open(CACHE);
-          cache.put('/', res.clone());
+          await cache.put('/', res.clone());
+          // a new build: forget the old hashed assets (sw.js itself does not change between builds)
+          event.waitUntil(res.clone().text().then(prune).catch(() => undefined));
         }
         return res;
       } catch {

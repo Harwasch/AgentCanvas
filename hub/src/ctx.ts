@@ -17,6 +17,7 @@ import type { NodeService } from './nodes.js';
 import type { ComputeService } from './compute.js';
 import type { HilService } from './hil.js';
 import type { TerminalService } from './terminal.js';
+import type { CanvasService } from './canvas.js';
 
 export interface Ctx {
   cfg: HubConfig;
@@ -38,5 +39,6 @@ export interface Ctx {
   compute: ComputeService;
   hil: HilService;
   terminals: TerminalService;
+  canvas: CanvasService;
   account(id: string): AccountConfig;
 }

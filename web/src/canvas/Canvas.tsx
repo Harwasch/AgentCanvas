@@ -6,12 +6,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api } from '../api';
 import { ViewportCtx } from '../nodes/common';
 import { NodeView } from '../nodes/NodeView';
-import { hub, setExpanded, ui, useHub, useUI } from '../store';
-import { CLOUD_NAMES, computeColor, computeKey, isActive, useIsPhone } from '../ui';
+import { hub, setExpanded, toast, ui, useHub, useUI } from '../store';
+import { CLOUD_NAMES, Icon, computeColor, computeKey, isActive, useIsPhone } from '../ui';
 import { applySaved, autoLayout, bbox, buildGraph, clipSeg, type Box, type GNode, type Graph, type NodeSize } from './layout';
 import { centerOn, clampZ, fitBox, useView, view, zoomAt } from './view';
 
 const GRID = 22;
+const CLIENT_ID = Math.random().toString(36).slice(2, 10);
 
 function nodeText(n: GNode): string {
   const h = hub.get();
@@ -55,6 +56,9 @@ export function Canvas() {
   const saved = useHub((h) => h.layout);
   const ready = useHub((h) => h.ready);
   const mode = useUI((u) => u.layoutMode);
+  const customBase = useUI((u) => u.customBase);
+  const glow = useUI((u) => u.glow);
+  const focusId = useUI((u) => u.focusId);
   const expanded = useUI((u) => u.expanded);
   const search = useUI((u) => u.search);
   const filter = useUI((u) => u.filter);
@@ -79,7 +83,7 @@ export function Canvas() {
   const sizes = useMemo(() => Object.fromEntries(JSON.parse(sizesKey)) as Record<string, NodeSize>, [sizesKey]);
   const G = useMemo(() => buildGraph({ hosts, checkouts, sessions, nodes, projects, branches, machines: hub.get().machines, devices, cnodes, todos, grants, hilPlans, expanded, phone, attention, sizes }),
     [hosts, checkouts, sessions, nodes, projects, branches, machineKeys, devices, cnodes, todos, grants, hilPlans, expanded, phone, attention, sizes]); // eslint-disable-line react-hooks/exhaustive-deps
-  const auto = useMemo(() => autoLayout(mode === 'custom' ? 'columns' : mode, G), [mode, G]);
+  const auto = useMemo(() => autoLayout(mode === 'custom' ? customBase : mode, G), [mode, customBase, G]);
   const GRef = useRef(G);
   GRef.current = G;
 
@@ -100,6 +104,21 @@ export function Canvas() {
   }, [auto, mode, G, saved, local, drag, resizing]);
   const posRef = useRef(pos);
   posRef.current = pos;
+
+  // tell the hub what this view shows, so Claude's canvas tools see the same positions and selection
+  useEffect(() => {
+    if (!ready) return;
+    const t = setTimeout(() => {
+      const v = view.get();
+      const nodes = G.nodes.filter((n) => pos[n.id]).map((n) => {
+        const p = pos[n.id];
+        return { id: n.id, kind: n.kind, title: nodeText(n).replace(/\s+/g, ' ').trim().slice(0, 100), parent: n.parent, x: Math.round(p.x), y: Math.round(p.y), w: Math.round(p.w), h: Math.round(p.h), ex: !!expanded[n.id] };
+      });
+      const visible = v.z > 0 ? { x: Math.round(-v.x / v.z), y: Math.round(-v.y / v.z), w: Math.round(v.w / v.z), h: Math.round(v.h / v.z) } : null;
+      api.canvasView({ clientId: CLIENT_ID, mode, nodes, selected: Object.keys(selected), focusId, visible }).catch(() => { /* offline */ });
+    }, 700);
+    return () => clearTimeout(t);
+  }, [ready, G, pos, selected, focusId, mode, expanded]);
 
   // ---- camera → DOM (no React re-render while panning)
   useLayoutEffect(() => {
@@ -464,10 +483,11 @@ export function Canvas() {
             const dragging = !!drag?.[n.id];
             const sizing = resizing?.id === n.id;
             const sel = !!selected[n.id];
+            const lit = !!glow[n.id];
             return (
               <div
                 key={n.id}
-                className={`node${dragging ? ' dragging' : ''}${sel ? ' selected' : ''}${sizing ? ' resizing' : ''}`}
+                className={`node${dragging ? ' dragging' : ''}${sel ? ' selected' : ''}${sizing ? ' resizing' : ''}${lit ? ' glow' : ''}`}
                 data-node={n.kind}
                 data-node-key={n.id}
                 data-selected={sel ? '1' : undefined}
@@ -501,7 +521,34 @@ export function Canvas() {
         ) : null}
       </div>
       <BottomBar pos={pos} />
+      <ChangePill />
     </ViewportCtx.Provider>
+  );
+}
+
+/** "Claude arranged 4 nodes · Undo": the latest batch of canvas edits made through the canvas tools. */
+function ChangePill() {
+  const c = useUI((u) => u.changes[0]);
+  const [hidden, setHidden] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!c) return;
+    const t = setTimeout(() => setHidden(c.batchId), 15000);
+    return () => clearTimeout(t);
+  }, [c?.batchId, c?.at]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!c || hidden === c.batchId) return null;
+  const undo = async () => {
+    setBusy(true);
+    try { await api.canvasUndo(c.batchId); } catch (e) { toast(`Undo failed: ${(e as Error).message}`, 'error'); }
+    setBusy(false);
+  };
+  return (
+    <div className="change-pill" data-testid="change-pill" data-batch={c.batchId}>
+      <span className="dot" style={{ background: '#E0896B', boxShadow: '0 0 8px #E0896B' }} />
+      <span className="ell" style={{ maxWidth: 420 }}><b style={{ fontWeight: 600 }}>{c.by}</b> {c.undone ? 'changes undone' : c.summary.join(' · ')}</span>
+      {!c.undone ? <button className="b" style={{ height: 26 }} disabled={busy} data-testid="change-undo" onClick={undo}>Undo</button> : null}
+      <button className="x" aria-label="Dismiss" onClick={() => setHidden(c.batchId)}><Icon name="x" size={11} /></button>
+    </div>
   );
 }
 

@@ -5,11 +5,12 @@ import { ShotApp } from './nodes/AppNode';
 import { NodeView, sheetTarget } from './nodes/NodeView';
 import { SessionNode, useSessionAttention } from './nodes/SessionNode';
 import { disablePush, enablePush, pushEnabled, pushSupported } from './push';
-import { focusNode, hub, lsSet, toast, ui, useHub, useUI, type LayoutMode, type Tab } from './store';
+import { focusNode, hub, setLayoutMode, toast, ui, useHub, useUI, type LayoutMode, type Tab } from './store';
 import { Icon, isActive, useIsPhone } from './ui';
 import { AuditView } from './views/AuditView';
 import { ConfirmDialog, PromoteModal, Toasts, TokenPrompt } from './views/Modals';
 import { ReposView } from './views/ReposView';
+import { AskBar, AskButton, AskPanel } from './views/AskClaude';
 import { SessionsView } from './views/SessionsView';
 import { SpawnDialog } from './views/SpawnDialog';
 import { AddMenu } from './views/AddMenu';
@@ -60,9 +61,10 @@ function Main() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') { e.preventDefault(); ui.set({ quickOpen: { parentId: null } }); return; }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); ui.set((u) => ({ askBar: !u.askBar })); return; }
       if (e.key !== 'Escape') return;
       const u = ui.get();
-      if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu) return;
+      if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu || u.askBar) return;
       if (Object.keys(u.expanded).length) ui.set({ expanded: {} });
     };
     window.addEventListener('keydown', onKey);
@@ -86,6 +88,8 @@ function Main() {
       <QuickOpen />
       <AddMenu />
       <PromoteModal />
+      <AskPanel />
+      <AskBar />
       <ConfirmDialog />
       <Toasts />
     </div>
@@ -134,7 +138,7 @@ function LayoutSeg() {
   return (
     <div className="seg" role="group" aria-label="Layout" data-testid="layout-seg">
       {LAYOUTS.map(([k, label]) => (
-        <button key={k} className={mode === k ? 'on' : ''} onClick={() => { ui.set({ layoutMode: k, tab: 'canvas' }); lsSet('hub.layoutMode', k); }}>{label}</button>
+        <button key={k} className={mode === k ? 'on' : ''} onClick={() => { setLayoutMode(k); ui.set({ tab: 'canvas' }); }}>{label}</button>
       ))}
     </div>
   );
@@ -241,6 +245,7 @@ function NeedsYou() {
     if (!n) { toast('Nothing needs you right now'); return; }
     const item = list[idx.current % n];
     idx.current = (idx.current + 1) % n;
+    if (item.kind === 'assistant') { ui.set({ askOpen: true }); return; }
     focusNode(item.id, true);
   };
   return (
@@ -287,6 +292,7 @@ function TopBar({ phone }: { phone: boolean }) {
           </div>
         ) : null}
       </div>
+      <AskButton phone={phone} />
       <NeedsYou />
     </div>
   );

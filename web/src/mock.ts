@@ -1,5 +1,6 @@
 // Mock hub for `?mock=1`: fixture state + local simulation of the command API and
 // event stream. Loaded via dynamic import so it is split out of the main bundle.
+import { assistantStart, assistantTurn, canvasUndo, decideAction, reportView, type AsstCtx } from './mockAssistant';
 import winchHtml from '../../apps/winch-console/ui.html?raw';
 import type { ApiResponse } from './api';
 import { HEX, WPT, handleV2, makeTermSocket, mockRawUrl, startV2Ticks, v2Fixtures, type V2Ctx, type V2State } from './mockv2';
@@ -327,6 +328,7 @@ function createSession(body: any): Session {
 }
 
 const v2ctx: V2Ctx = { state, emit, createSession, addMsg, updSession: (id, patch) => { updSession(id, patch); }, streamReply };
+const asst: AsstCtx = { state, emit, addMsg, streamReply, updSession: (id, patch) => { updSession(id, patch); }, createSession, v2: (mth, path, body) => handleV2(mth, path, new URL(path, location.origin), body, v2ctx) };
 startV2Ticks(v2ctx);
 export const mockTerminal = makeTermSocket;
 export const mockRaw = mockRawUrl;
@@ -341,12 +343,21 @@ export async function handle(method: string, path: string, body?: any): Promise<
   if (method === 'GET' && p === '/api/state') return ok(snapshot());
 
   if (method === 'POST' && p === '/api/sessions') return ok(createSession(body));
+  // canvas assistant (Ask Claude)
+  if (method === 'POST' && p === '/api/assistant/start') return ok(assistantStart(asst, body));
+  if (method === 'POST' && p === '/api/canvas/view') { reportView(body); return ok(); }
+  if (method === 'POST' && (m = p.match(/^\/api\/canvas\/undo\/([^/]+)$/))) return canvasUndo(asst, m[1]);
 
   if ((m = p.match(/^\/api\/sessions\/([^/]+)\/(messages|send|interrupt|settings|stop|refresh)$/))) {
     const [, sid, act] = m;
     const s = state.sessions.find((x) => x.id === sid);
     if (!s) return err(404, { error: 'no such session' });
     if (act === 'messages') return ok(clone(state.messages[sid] || []));
+    if (act === 'send' && s.meta?.role === 'assistant') {
+      addMsg(sid, 'user', 'text', String(body.text));
+      void assistantTurn(asst, sid, String(body.text));
+      return ok();
+    }
     if (act === 'send') {
       addMsg(sid, 'user', 'text', body.text);
       updSession(sid, { status: 'running' });
@@ -376,6 +387,7 @@ export async function handle(method: string, path: string, body?: any): Promise<
     if (!ap) return err(404, { error: 'no such approval' });
     const status = body.decision === 'deny' ? 'deny' : 'allow';
     upd(state.approvals, ap.id, { status }, 'approval.upsert');
+    if (ap.source === 'canvas-action') { decideAction(asst, ap, status === 'allow'); return ok(clone(ap)); }
     if (status === 'allow') {
       updSession(ap.session_id, { status: 'running' });
       addMsg(ap.session_id, 'assistant', 'command', ap.detail, { exitCode: null, output: 'running…' });

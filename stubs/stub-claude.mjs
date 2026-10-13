@@ -313,7 +313,9 @@ async function turn(text, signal) {
     out('  ⎿ Interrupted · What should Claude do instead?');
   };
 
-  if (/winch/.test(low) && /(build|app|console)/.test(low)) {
+  if (process.env.HUB_ROLE === 'assistant' && (last = await assistantTurn(body, low, signal)) !== null) {
+    if (signal.aborted) return interrupted();
+  } else if (/winch/.test(low) && /(build|app|console)/.test(low)) {
     await say(`I'll build the simulated winch console as an MCP App under apps/winch-console/ and publish it to the hub.`, signal);
     const src = path.join(STUB_LIB, 'demo-apps', 'winch-console');
     for (const f of fs.readdirSync(src)) {
@@ -359,6 +361,49 @@ async function turn(text, signal) {
   }
   if (signal.aborted) return interrupted();
   await fireHooks(settingsList, 'Stop', { ...hookBase(), stop_hook_active: false, last_assistant_message: last });
+}
+
+// Canvas assistant (HUB_ROLE=assistant): drives the hub's canvas tools like the real Claude would.
+const parseJson = (t) => { try { return JSON.parse(t); } catch { return null; } };
+async function assistantTurn(body, low, signal) {
+  if (/\b(arrange|tidy|line up|row|column|grid)\b/.test(low)) {
+    const snap = parseJson((await useTool('mcp__hub__canvas_snapshot', {}, signal, false))?.text || '') || {};
+    const pattern = /column/.test(low) ? 'column' : /grid/.test(low) ? 'grid' : 'row';
+    const sel = snap.selected || [];
+    if (!sel.length) { await say('Select the nodes you want arranged first, then ask again.', signal); return 'nothing selected'; }
+    const r = await useTool('mcp__hub__canvas_arrange', { ids: sel, pattern, gap: 48 }, signal, false);
+    let note = '';
+    if (/\bnote\b/.test(low)) {
+      const boxes = (snap.nodes || []).filter((n) => sel.includes(n.id));
+      const x = Math.min(...boxes.map((b) => b.x)), y = Math.min(...boxes.map((b) => b.y));
+      const n = await useTool('mcp__hub__canvas_add_note', { title: 'Arranged by Claude', text: `Lined up ${sel.length} nodes in a ${pattern}.`, x, y: y - 220 }, signal, false);
+      note = n && !n.isError ? ' and added a note above them' : '';
+    }
+    const last = r && !r.isError ? `Arranged ${sel.length} nodes in a ${pattern}${note}. Undo is in the hub if you want them back.` : `Could not arrange: ${r?.text}`;
+    await say(last, signal);
+    return last;
+  }
+  const m = low.match(/\b(?:start|spawn|launch)\b.*?\b(codex|claude)\b.*?\bon ([\w-]+)(?:.*?\bto (.+))?/);
+  if (m) {
+    const ov = parseJson((await useTool('mcp__hub__hub_overview', {}, signal, false))?.text || '') || {};
+    const host = m[2];
+    const co = (ov.projects || []).flatMap((p) => p.checkouts || []).find((c) => c.host === host);
+    const prompt = (body.match(/\bto (.+)$/i)?.[1] || 'look around the repo').trim();
+    await say(`Asking you to confirm a ${m[1]} session on ${host}.`, signal);
+    const r = await useTool('mcp__hub__hub_spawn_session', { vendor: m[1], host, account: ov.accounts?.[0]?.id, checkout_id: co?.id, prompt }, signal, false);
+    const last = r && !r.isError ? `Started it: ${r.text}.` : `Not started: ${r?.text}`;
+    await say(last, signal);
+    return last;
+  }
+  const lm = low.match(/\b(cluster|columns|tree|custom)\b.*\blayout|\blayout\b.*\b(cluster|columns|tree|custom)\b/);
+  if (lm) {
+    const mode = lm[1] || lm[2];
+    await useTool('mcp__hub__canvas_layout', { mode }, signal, false);
+    const last = `Switched the canvas to the ${mode} layout.`;
+    await say(last, signal);
+    return last;
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------ startup

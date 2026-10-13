@@ -29,7 +29,7 @@ interface Route {
   h: Handler;
   auth: Auth;
 }
-export type Auth = 'hub' | 'hook' | 'cloudHook' | 'none';
+export type Auth = 'hub' | 'hook' | 'cloudHook' | 'mcp' | 'none';
 
 export class Router {
   routes: Route[] = [];

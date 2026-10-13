@@ -37,7 +37,7 @@ export class ClaudeDriver {
     return d.startsWith('~/') ? `${home}/${d.slice(2)}` : d;
   }
 
-  async start(o: { hostId: string; accountId: string; cwd: string; checkoutId?: string | null; branch?: string | null; prompt?: string; model?: string; title?: string; resumeUuid?: string }): Promise<Session> {
+  async start(o: { hostId: string; accountId: string; cwd: string; checkoutId?: string | null; branch?: string | null; prompt?: string; model?: string; title?: string; resumeUuid?: string; role?: 'assistant' }): Promise<Session> {
     const info = await this.c.boot.ensure(o.hostId);
     const hubId = newId('cc-');
     const uuid = o.resumeUuid || crypto.randomUUID();
@@ -48,12 +48,12 @@ export class ClaudeDriver {
       bin: this.c.hosts.bin(o.hostId, 'claude'), hubId, sessionUuid: uuid, rcName: `${hubId} · ${repo}`,
       settingsFile: `${info.base}/claude-settings.json`, mcpConfigFile: `${info.base}/mcp.json`, resume: !!o.resumeUuid, model: o.model,
     });
-    const inner = `set -a; . ${q(info.base + '/hub.env')}; set +a; export CLAUDE_CONFIG_DIR=${q(configDir)} HUB_SESSION_ID=${q(hubId)}; exec ${launch}`;
+    const inner = `set -a; . ${q(info.base + '/hub.env')}; set +a; export CLAUDE_CONFIG_DIR=${q(configDir)} HUB_SESSION_ID=${q(hubId)}${o.role ? ` HUB_ROLE=${q(o.role)}` : ''}; exec ${launch}`;
     const s = this.c.store.upsertSession({
       id: hubId, vendor: 'claude', kind: 'local', host_id: o.hostId, account_id: o.accountId, checkout_id: o.checkoutId ?? null, cwd: o.cwd,
       branch: o.branch ?? null, native_id: uuid, native_url: null, title: o.title || (o.prompt ? o.prompt.slice(0, 60) : `Claude · ${repo}`),
       status: 'starting', model: o.model ?? null, effort: null, last_event: 'launch',
-      meta: { tmux, transcript: ClaudeAdapter.transcriptPath(configDir, o.cwd, uuid), channel: 'disconnected' },
+      meta: { tmux, transcript: ClaudeAdapter.transcriptPath(configDir, o.cwd, uuid), channel: 'disconnected', ...(o.role ? { role: o.role } : {}) },
     });
     await this.c.hosts.execOk(o.hostId, `${this.tmuxBin(o.hostId)} new-session -d -s ${q(tmux)} -x 220 -y 50 -c ${rpath(o.cwd)} ${q(inner)}`);
     L(`launched ${hubId} on ${o.hostId} in ${o.cwd}`);

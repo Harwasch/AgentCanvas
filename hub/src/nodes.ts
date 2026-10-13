@@ -48,6 +48,16 @@ export async function spawnSession(c: Ctx, b: any): Promise<Session> {
   throw new Error('unknown vendor');
 }
 
+/** Deliver a user message to a session (local Claude/Codex, or a Claude cloud session). */
+export async function sendToSession(c: Ctx, s: Session, text: string) {
+  if (s.kind === 'cloud') {
+    if (s.vendor === 'claude') return c.cloud.sendClaude(s.id, text);
+    throw new Error('Codex cloud tasks cannot be continued outside ChatGPT; open it there');
+  }
+  if (s.vendor === 'claude') return c.claude.send(s.id, text);
+  return c.codex.send(s.id, text);
+}
+
 export class NodeService {
   private timer?: NodeJS.Timeout;
   constructor(private c: Ctx) {}

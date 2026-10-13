@@ -129,7 +129,8 @@ export function buildGraph(g: GraphInput): Graph {
   // sessions
   const cloudBranchOf: Record<string, string> = {};
   branches.forEach((b) => { if (b.cloud?.sessionId) cloudBranchOf[b.cloud.sessionId] = b.id; });
-  const sessions = Object.values(g.sessions).sort((a, b) => tsOf(a.created_at) - tsOf(b.created_at));
+  // the canvas assistant lives in the Ask Claude panel, not on the canvas
+  const sessions = Object.values(g.sessions).filter((s) => s.meta?.role !== 'assistant').sort((a, b) => tsOf(a.created_at) - tsOf(b.created_at));
   sessions.forEach((s) => {
     const e = ex(s.id);
     const key = computeKey(s);

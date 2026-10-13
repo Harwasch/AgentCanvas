@@ -61,6 +61,7 @@ export interface Session {
   created_at: string | number;
   updated_at: string | number;
   meta: {
+    role?: 'assistant';
     channel?: 'connected' | 'disconnected';
     tmux?: string;
     cloudStatus?: string;
@@ -85,7 +86,7 @@ export interface Message {
 export interface Approval {
   id: string;
   session_id: string;
-  source: 'codex' | 'claude-channel' | 'claude-hook' | 'app-confirm';
+  source: 'codex' | 'claude-channel' | 'claude-hook' | 'app-confirm' | 'canvas-action';
   title: string;
   detail: string;
   data: any;
@@ -323,3 +324,6 @@ export interface CallToolResult {
   isError?: boolean;
   [k: string]: unknown;
 }
+
+/** canvas.changed: a batch of edits Claude made through the canvas tools (undoable) */
+export interface CanvasChange { batchId: string; by: string; sessionId: string | null; summary: string[]; ids: string[]; moved?: boolean; at: number; undone?: boolean }

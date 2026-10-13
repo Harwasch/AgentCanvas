@@ -19,7 +19,7 @@ const withCur = (list: string[], cur: string | null) => (cur && !list.includes(c
 
 export const nativeLabel = (s: Session) => (s.vendor === 'claude' ? 'Open in claude.ai' : 'Open in ChatGPT');
 
-function ApprovalCard({ a, vendor }: { a: Approval; vendor: string }) {
+export function ApprovalCard({ a, vendor }: { a: Approval; vendor: string }) {
   const [busy, setBusy] = useState(false);
   const decide = async (d: 'allow' | 'deny' | 'allowSession') => {
     setBusy(true);
@@ -44,7 +44,7 @@ function ApprovalCard({ a, vendor }: { a: Approval; vendor: string }) {
   );
 }
 
-function MessageItem({ m }: { m: Message }) {
+export function MessageItem({ m }: { m: Message }) {
   const [open, setOpen] = useState(false);
   if (m.role === 'user' && m.kind === 'text') {
     return <div data-testid="msg" data-role="user" className="prose" style={{ alignSelf: 'flex-end', maxWidth: '85%', background: '#1A1C21', border: '1px solid #24272D', borderRadius: 12, padding: '8px 12px', lineHeight: 1.5, fontSize: 12.5 }}>{m.text}</div>;
@@ -295,12 +295,15 @@ export function useSessionAttention() {
   const cnodes = useHub((h) => h.cnodes);
   const grants = useHub((h) => h.grants);
   return useMemo(() => {
-    const list: { id: string; kind: 'session' | 'review' | 'grant'; approvalId?: string }[] = [];
+    const list: { id: string; kind: 'session' | 'review' | 'grant' | 'assistant'; approvalId?: string }[] = [];
     const seen = new Set<string>();
+    // the canvas assistant (and external Claude clients) ask in the Ask Claude panel
+    const isAsk = (sid: string) => sid === 'mcp:external' || sessions[sid]?.meta?.role === 'assistant';
     Object.values(approvals).filter((a) => a.status === 'pending').sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).forEach((a) => {
+      if (isAsk(a.session_id) || a.source === 'canvas-action') { if (!seen.has('assistant')) { seen.add('assistant'); list.push({ id: 'assistant', kind: 'assistant', approvalId: a.id }); } return; }
       if (sessions[a.session_id] && !seen.has(a.session_id)) { seen.add(a.session_id); list.push({ id: a.session_id, kind: 'session', approvalId: a.id }); }
     });
-    Object.values(sessions).filter((s) => s.status === 'waiting' && !seen.has(s.id)).forEach((s) => { seen.add(s.id); list.push({ id: s.id, kind: 'session' }); });
+    Object.values(sessions).filter((s) => s.status === 'waiting' && !seen.has(s.id) && s.meta?.role !== 'assistant').forEach((s) => { seen.add(s.id); list.push({ id: s.id, kind: 'session' }); });
     Object.values(cnodes).filter((c) => c.type === 'review' && c.data?.status === 'pending').forEach((c) => list.push({ id: c.id, kind: 'review' }));
     Object.values(grants).filter((g) => g.status === 'requested').forEach((g) => list.push({ id: g.id, kind: 'grant' }));
     return list;

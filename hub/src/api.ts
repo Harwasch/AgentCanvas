@@ -7,9 +7,15 @@ import { AppError } from './apps/service.js';
 import type { Caller } from './apps/policy.js';
 import { log } from './events.js';
 import { routesV2 } from './api2.js';
-import { spawnSession } from './nodes.js';
+import { spawnSession, sendToSession } from './nodes.js';
+import { layoutEntry, mergeSize, type CanvasCaller } from './canvas.js';
 
 const L = log('api');
+
+export const CANVAS_INSTRUCTIONS =
+  'Agent Hub canvas tools. Call canvas_snapshot first to see node ids, positions (canvas units) and the user\'s selection; ' +
+  'hub_overview lists hosts, accounts, projects, checkouts and sessions. Arranging, notes, files and to-dos apply live and the user can undo them. ' +
+  'hub_* actions (start sessions, message agents, run HIL, create branches, open terminals) wait for the user to confirm in the hub.';
 
 export function routes(c: Ctx): Router {
   const r = new Router();
@@ -60,11 +66,8 @@ export function routes(c: Ctx): Router {
   r.post('/api/sessions/:id/send', 'hub', async (req) => {
     const s = session(req.params.id);
     const text = need(req.body?.text, 'text');
-    if (s.kind === 'cloud') {
-      if (s.vendor === 'claude') await c.cloud.sendClaude(s.id, text);
-      else throw new HttpError(409, 'Codex cloud tasks cannot be continued outside ChatGPT; open it there');
-    } else if (s.vendor === 'claude') await c.claude.send(s.id, text);
-    else await c.codex.send(s.id, text);
+    if (s.kind === 'cloud' && s.vendor === 'codex') throw new HttpError(409, 'Codex cloud tasks cannot be continued outside ChatGPT; open it there');
+    await sendToSession(c, s, text);
     return { ok: true };
   });
   r.post('/api/sessions/:id/interrupt', 'hub', async (req) => {
@@ -104,6 +107,7 @@ export function routes(c: Ctx): Router {
     if (!['allow', 'deny', 'allowSession'].includes(d)) throw new HttpError(400, 'decision must be allow|deny|allowSession');
     if (a.source === 'codex') await c.codex.decide(a.id, d);
     else if (a.source === 'app-confirm') c.apps.decideConfirm(a.id, d === 'deny' ? 'deny' : 'allow');
+    else if (a.source === 'canvas-action') c.canvas.decide(a.id, d === 'deny' ? 'deny' : 'allow');
     else await c.claude.decide(a.id, d === 'deny' ? 'deny' : 'allow');
     return c.store.approval(a.id);
   });
@@ -242,6 +246,14 @@ export function routes(c: Ctx): Router {
     }
     const hostId = s?.host_id ?? ctx.hostId;
     const agent: Caller = { kind: 'agent', id: s?.id ?? 'unknown', label: s ? `${s.vendor} ${s.title}` : `agent on ${hostId}` };
+    const assistant = s?.meta?.role === 'assistant';
+    if (c.canvas.has(tool)) {
+      const caller: CanvasCaller = { kind: assistant ? 'assistant' : 'agent', sessionId: s?.id ?? null, label: assistant ? 'Claude' : s ? `${s.vendor} · ${s.title}` : `agent on ${hostId}` };
+      return c.canvas.call(tool, args, caller);
+    }
+    // the canvas assistant never drives hardware or apps directly: those go through the confirm-tier hub_* tools
+    if (assistant && ['app_call', 'acquire_device', 'run_on_host', 'run_hil', 'request_compute'].includes(tool))
+      return err(`${tool} is not available to the canvas assistant${tool === 'run_hil' ? '; use hub_run_hil (the user confirms it)' : ''}`);
     try {
       switch (tool) {
         case 'publish_app': {
@@ -348,24 +360,64 @@ export function routes(c: Ctx): Router {
     }
   });
 
+  // ------------------------------------------------------------- canvas tools, Ask Claude, external MCP
+  r.get('/api/mcp/tools', 'hook', () => ({ tools: c.canvas.tools() }));
+  r.post('/api/canvas/view', 'hub', (req) => {
+    c.canvas.report(String(req.body?.clientId || 'default'), req.body || {});
+    return { ok: true };
+  });
+  r.get('/api/canvas/batches', 'hub', () => c.canvas.batchesList());
+  r.post('/api/canvas/undo/:id', 'hub', (req) => {
+    try {
+      return c.canvas.undo(req.params.id);
+    } catch (e: any) {
+      throw new HttpError(/unknown/.test(e.message) ? 404 : 409, e.message);
+    }
+  });
+  r.post('/api/assistant/start', 'hub', async (req) => {
+    const hostId = need(req.body?.hostId, 'hostId');
+    const accountId = need(req.body?.accountId, 'accountId');
+    try {
+      c.account(accountId);
+      c.hosts.host(hostId);
+      const info = await c.boot.ensure(hostId);
+      return await c.claude.start({ hostId, accountId, cwd: info.home, title: 'Canvas assistant', role: 'assistant', prompt: req.body?.prompt ? String(req.body.prompt) : undefined });
+    } catch (e: any) {
+      throw new HttpError(/unknown|required/i.test(e.message) ? 400 : 500, e.message);
+    }
+  });
+  // Streamable-HTTP MCP endpoint for Claude Code / Claude Desktop on your own machines (bearer: the MCP token)
+  r.post('/mcp', 'mcp', async (req, res) => {
+    const m = req.body || {};
+    const reply = (result: any) => json(res, 200, { jsonrpc: '2.0', id: m.id, result });
+    const fail = (code: number, message: string) => json(res, 200, { jsonrpc: '2.0', id: m.id ?? null, error: { code, message } });
+    if (Array.isArray(m)) return fail(-32600, 'batches are not supported');
+    if (m.id === undefined || m.id === null) { res.writeHead(202); res.end(); return; } // notifications
+    switch (m.method) {
+      case 'initialize':
+        return reply({
+          protocolVersion: typeof m.params?.protocolVersion === 'string' ? m.params.protocolVersion : '2025-06-18',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'agent-hub', version: '0.2.0' },
+          instructions: CANVAS_INSTRUCTIONS,
+        });
+      case 'ping':
+        return reply({});
+      case 'tools/list':
+        return reply({ tools: c.canvas.tools() });
+      case 'tools/call': {
+        const name = String(m.params?.name || '');
+        if (!c.canvas.has(name)) return fail(-32602, `unknown tool ${name}`);
+        const who = String(req.headers['x-hub-client'] || 'Claude (external)').slice(0, 40);
+        return reply(await c.canvas.call(name, m.params?.arguments || {}, { kind: 'external', sessionId: null, label: who }));
+      }
+      default:
+        return fail(-32601, `method not found: ${m.method}`);
+    }
+  });
+  r.get('/mcp', 'mcp', (_req, res) => { res.writeHead(405, { allow: 'POST' }); res.end(); });
+
   routesV2(c, r);
   return r;
 }
 
-type Size = [number, number];
-function mergeSize(prev: Record<string, Size>, patch: any): Record<string, Size> {
-  const out: Record<string, Size> = { ...prev };
-  if (!patch || typeof patch !== 'object') return out;
-  for (const k of ['c', 'x']) {
-    if (!(k in patch)) continue;
-    const v = patch[k];
-    if (v === null) delete out[k];
-    else if (Array.isArray(v) && v.length === 2 && v.every((n) => Number.isFinite(n) && n > 0 && n < 20000)) out[k] = [Math.round(v[0]), Math.round(v[1])];
-  }
-  return out;
-}
-
-function layoutEntry(l: Record<string, any>) {
-  const size = l.sz ? JSON.parse(l.sz) : undefined;
-  return { x: l.x, y: l.y, w: l.w, h: l.h, collapsed: !!l.collapsed, ...(size && Object.keys(size).length ? { size } : {}) };
-}

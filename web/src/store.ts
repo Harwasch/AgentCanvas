@@ -4,6 +4,7 @@ import { api } from './api';
 import type {
   Account, AppNode, Approval, Audit, Branch, CNode, Checkout, Device, FileSource, Grant, HilPlan, HilRun, Host, HubEvent,
   LayoutEntry, Machine, Message, Project, Session, StateSnapshot, Todo,
+  CanvasChange,
 } from './types';
 
 // ---------- tiny store helper ----------
@@ -156,8 +157,20 @@ export function applyEvent(ev: HubEvent) {
     }
     case 'audit.append': hub.set({ seq, audit: [d, ...s.audit].slice(0, 500) }); break;
     case 'layout.upsert': {
-      const { nodeId, ...rest } = d;
-      hub.set({ seq, layout: { ...s.layout, [nodeId]: { ...(s.layout[nodeId] || {}), ...rest } } });
+      const { nodeId, removed, ...rest } = d;
+      const layout = { ...s.layout };
+      if (removed) delete layout[nodeId];
+      else layout[nodeId] = { ...(s.layout[nodeId] || {}), ...rest };
+      hub.set({ seq, layout });
+      break;
+    }
+    case 'canvas.changed': hub.set({ seq }); onCanvasChanged(d); break;
+    case 'canvas.undone': hub.set({ seq }); ui.set((u) => ({ changes: u.changes.map((c) => (c.batchId === d.batchId ? { ...c, undone: true } : c)) })); break;
+    case 'canvas.ui': {
+      hub.set({ seq });
+      if (d.layoutMode) setLayoutMode(d.layoutMode);
+      if (Array.isArray(d.select)) ui.set({ selected: Object.fromEntries(d.select.map((x: string) => [x, true])) });
+      if (d.focus) focusNode(d.focus);
       break;
     }
     case 'toast': hub.set({ seq }); toast(d.text, d.level); break;
@@ -204,6 +217,13 @@ export interface UIState {
   reviewId: string | null;
   repoSource: FileSource | null;
   addMenu: { x?: number; y?: number; parentId?: string | null; kind?: string } | null;
+  // Ask Claude
+  askOpen: boolean;
+  askBar: boolean;
+  /** Custom layout starts from this auto layout (the one showing when Claude or you first pinned positions) */
+  customBase: Exclude<LayoutMode, 'custom'>;
+  changes: CanvasChange[];
+  glow: Record<string, number>;
 }
 export interface SpawnPreset { checkoutId?: string; branch?: string; prompt?: string; hostId?: string; title?: string }
 export interface QuickOpenReq { source?: FileSource; parentId?: string | null; scopeLabel?: string }
@@ -217,7 +237,35 @@ export const ui = createStore<UIState>({
   search: '', filter: null, expanded: {}, focusId: null, selected: {}, panTo: null, repoCheckout: null,
   toasts: [], confirm: null, spawnOpen: false, spawnPreset: null, promoteId: null,
   quickOpen: null, branchModal: null, reviewId: null, repoSource: null, addMenu: null,
+  askOpen: lsGet('hub.askOpen') === '1', askBar: false,
+  customBase: ((b) => (b === 'cluster' || b === 'tree' ? b : 'columns'))(lsGet('hub.customBase')),
+  changes: [], glow: {},
 });
+
+/** Switch layout mode; entering Custom from an auto layout keeps that layout as the base. */
+export function setLayoutMode(mode: LayoutMode) {
+  const cur = ui.get().layoutMode;
+  if (mode === 'custom' && cur !== 'custom') { ui.set({ customBase: cur }); lsSet('hub.customBase', cur); }
+  ui.set({ layoutMode: mode });
+  lsSet('hub.layoutMode', mode);
+}
+
+function onCanvasChanged(d: CanvasChange) {
+  const until = Date.now() + 3500;
+  ui.set((u) => {
+    const glow = { ...u.glow };
+    d.ids.forEach((id) => { glow[id] = until; });
+    const changes = [d, ...u.changes.filter((c) => c.batchId !== d.batchId)].slice(0, 8);
+    return { glow, changes };
+  });
+  // moves only show in Custom: keep the current auto layout underneath so nothing else jumps
+  if (d.moved && ui.get().layoutMode !== 'custom') setLayoutMode('custom');
+  setTimeout(() => ui.set((u) => {
+    const glow = { ...u.glow };
+    Object.keys(glow).forEach((k) => { if (glow[k] <= Date.now()) delete glow[k]; });
+    return { glow };
+  }), 3600);
+}
 export const useUI = <R,>(sel: (s: UIState) => R) => useStore(ui, sel);
 
 let toastN = 0;

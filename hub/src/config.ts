@@ -97,6 +97,8 @@ export interface Secrets {
   hubToken: string;
   hookToken: string;
   cloudHookToken: string;
+  /** bearer token for the external /mcp endpoint (Claude Code / Desktop on your machines) */
+  mcpToken: string;
   vapid?: { publicKey: string; privateKey: string };
 }
 
@@ -163,6 +165,7 @@ export function loadSecrets(dataDir: string): Secrets {
     hubToken: process.env.HUB_TOKEN || s.hubToken || tok(),
     hookToken: s.hookToken || tok(),
     cloudHookToken: s.cloudHookToken || tok(),
+    mcpToken: s.mcpToken || tok(),
     vapid: s.vapid,
   };
   fs.writeFileSync(f, JSON.stringify(out, null, 2), { mode: 0o600 });

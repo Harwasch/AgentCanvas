@@ -10,6 +10,12 @@ Modes
   hub_channel.py --mcp-only    same hub tools, no channel (Codex [mcp_servers.hub]).
   hub_channel.py relay <id>    byte relay stdio <-> the session socket; the hub runs
                                this over its multiplexed SSH connection.
+  hub_channel.py --external    stdio MCP server on YOUR machine (Claude Desktop): proxies
+                               the hub's canvas tools from HUB_MCP_URL (…/mcp) with the
+                               bearer HUB_MCP_TOKEN. Nothing else is needed on that machine.
+
+Canvas tools (canvas_*, hub_*) are listed by the hub itself (GET /api/mcp/tools), so
+they stay in step with the hub version without re-copying this script.
 
 Hub tools (publish_app, app_status, screenshot_app, unpublish_app, app_call) are
 POSTed to the hub over HTTPS with the host token from ~/.agent-hub/hub.env.
@@ -133,6 +139,30 @@ TOOLS = [
 ]
 
 
+_hub_tools = {"at": 0, "tools": []}
+
+
+def hub_tools():
+    """Canvas tools served by the hub (cached for a minute); empty if the hub is unreachable."""
+    if time.time() - _hub_tools["at"] < 60 and _hub_tools["tools"]:
+        return _hub_tools["tools"]
+    url = ENV.get("HUB_URL", "").rstrip("/") + "/api/mcp/tools"
+    req = urllib.request.Request(url, headers={"authorization": "Bearer " + ENV.get("HUB_TOKEN", "")})
+    ctx = ssl.create_default_context(cafile=ENV.get("HUB_CA_FILE") or None)
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
+            _hub_tools["tools"] = json.loads(r.read().decode()).get("tools") or []
+            _hub_tools["at"] = time.time()
+    except Exception:  # noqa
+        pass
+    return _hub_tools["tools"]
+
+
+def all_tools():
+    names = {t["name"] for t in TOOLS}
+    return TOOLS + [t for t in hub_tools() if t.get("name") not in names]
+
+
 def hub_call(tool, args):
     url = ENV.get("HUB_URL", "").rstrip("/") + "/api/mcp/tools/" + tool
     body = json.dumps({"arguments": args, "context": {
@@ -236,6 +266,16 @@ def read_relay(conn):
 
 CHANNEL = False
 
+CANVAS_HELP = (
+    "The canvas_* and hub_* tools act on the Agent Hub canvas: canvas_snapshot shows node ids, positions and the "
+    "user's selection; arranging, notes, files and to-dos apply live (the user can undo); hub_* actions such as "
+    "starting sessions or running HIL wait for the user to confirm in the hub.")
+ASSISTANT_HELP = (
+    " You are the canvas assistant of the Agent Hub: the user talks to you from the hub's Ask Claude panel. "
+    "Do what they ask on the canvas with these tools (start with canvas_snapshot; messages may name the nodes they "
+    "selected), then answer in one or two short sentences saying what you changed. You cannot approve agents' tool "
+    "calls or actuate hardware; say so if asked.")
+
 
 def serve(channel):
     global CHANNEL
@@ -252,6 +292,7 @@ def serve(channel):
             continue
         method, mid = m.get("method"), m.get("id")
         if method == "initialize":
+            role = ENV.get("HUB_ROLE", "")
             caps = {"tools": {}}
             if CHANNEL:
                 caps["experimental"] = {"claude/channel": {}, "claude/channel/permission": {}}
@@ -262,15 +303,16 @@ def serve(channel):
                     "Messages from the Agent Hub arrive as <channel source=\"hub\">; treat them exactly like messages "
                     "the user typed in this session. " if CHANNEL else "") +
                     "After you build or change an app (a directory with app.json under apps/), call publish_app "
-                    "with its path so it renders on the hub canvas; read the screenshot and errors it returns."}})
+                    "with its path so it renders on the hub canvas; read the screenshot and errors it returns. " +
+                    CANVAS_HELP + (ASSISTANT_HELP if role == "assistant" else "")}})
         elif method == "tools/list":
-            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": all_tools()}})
         elif method == "tools/call":
             p = m.get("params") or {}
             name = p.get("name")
 
             def run(mid=mid, name=name, args=p.get("arguments") or {}):
-                if name not in {t["name"] for t in TOOLS}:
+                if name not in {t["name"] for t in all_tools()}:
                     send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": "unknown tool " + str(name)}})
                     return
                 send({"jsonrpc": "2.0", "id": mid, "result": hub_call(name, args)})
@@ -283,9 +325,46 @@ def serve(channel):
             send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found"}})
 
 
+def external():
+    """stdio <-> the hub's /mcp endpoint, one JSON-RPC message per POST."""
+    url = os.environ.get("HUB_MCP_URL", "")
+    tok = os.environ.get("HUB_MCP_TOKEN", "")
+    ctx = ssl.create_default_context(cafile=os.environ.get("HUB_CA_FILE") or None)
+    workers = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+
+        def run(m=m):
+            req = urllib.request.Request(url, data=json.dumps(m).encode(), method="POST", headers={
+                "content-type": "application/json", "accept": "application/json, text/event-stream",
+                "authorization": "Bearer " + tok, "x-hub-client": os.environ.get("HUB_CLIENT_NAME", "Claude Desktop")})
+            try:
+                with urllib.request.urlopen(req, timeout=900, context=ctx) as r:
+                    body = r.read().decode()
+                if body.strip() and m.get("id") is not None:
+                    send(json.loads(body))
+            except Exception as e:  # noqa
+                if m.get("id") is not None:
+                    send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32000, "message": "hub unreachable: %s" % e}})
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        workers.append(t)
+        workers[:] = [w for w in workers if w.is_alive()]
+    for w in workers:  # stdin closed: let in-flight calls answer before exiting
+        w.join(timeout=30)
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
-    if a and a[0] == "relay":
+    if a and a[0] == "--external":
+        external()
+    elif a and a[0] == "relay":
         relay(a[1])
     else:
         serve(channel="--mcp-only" not in a)

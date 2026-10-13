@@ -59,6 +59,37 @@ The page runs the real PWA against the in-page mock hub (simulated hosts, agents
 
 Layouts: **Cluster** (radial), **Columns** (top-down trees side by side), **Tree** (each group's tree runs left → right, groups stacked), **Custom** (your saved positions). Sizes you set apply in every layout; they are stored per node and per collapsed/expanded state.
 
+## Ask Claude (agentic canvas)
+
+**Ask Claude** (top bar), or **⌘J** for one line from anywhere, talks to one canvas-assistant conversation: a Claude session on a host and account you pick, with the hub's canvas tools. It uses your subscription, like every other session. All your devices share that conversation.
+
+| Tier | What Claude can do | How |
+|---|---|---|
+| Free | `canvas_snapshot`, `hub_overview`, `canvas_move` / `canvas_arrange` / `canvas_resize`, `canvas_layout`, `canvas_focus`, `canvas_select`, `canvas_add_note`, `canvas_add_todo`, `canvas_open_file`, `canvas_remove` (notes, files, to-do lists) | Applies live; changed nodes glow; **Undo** on the pill or in the panel reverts the batch |
+| Confirm | `hub_spawn_session`, `hub_send_message`, `hub_run_hil`, `hub_create_branch`, `hub_open_terminal` | The tool call waits for **Allow / Deny** in the panel (also in Needs you and web push) |
+| Never | approving agents' tool calls, actuating hardware or apps | No tool exists; the assistant session is also refused `app_call`, `acquire_device`, `run_on_host`, `run_hil` |
+
+Select nodes first and say "these"; the selection goes with the message. Agents on hosts get the same tools through the channel script.
+
+### Use the canvas tools from Claude Code or Claude Desktop on your own machine
+
+The hub serves the same tools at `https://<hub>/mcp` (Streamable HTTP, JSON responses), with its own bearer token: `mcpToken` in `<dataDir>/secrets.json`. That token is not the PWA token and not the host token.
+
+```bash
+# Claude Code
+claude mcp add --transport http agent-hub https://hub.<tailnet>.ts.net/mcp --header "Authorization: Bearer <mcpToken>"
+```
+
+Claude Desktop's custom connectors are fetched from Anthropic's cloud, which cannot reach a tailnet. Run the stdio bridge locally instead; it is the same script the hub copies to hosts, and needs only Python 3:
+
+```json
+{ "mcpServers": { "agent-hub": {
+  "command": "python3", "args": ["/path/to/AgentCanvas/host-files/hub_channel.py", "--external"],
+  "env": { "HUB_MCP_URL": "https://hub.<tailnet>.ts.net/mcp", "HUB_MCP_TOKEN": "<mcpToken>" } } } }
+```
+
+Edits from those clients show up live in every open PWA, labelled with the client's name, and are undoable. Confirm-tier actions wait for you in the hub's Ask Claude panel.
+
 ## Install on a real Linux host (the always-on mini PC)
 
 The hub runs as an ordinary user. It needs no root and no API keys: every turn runs through the official `claude` and `codex` binaries, signed in with your subscriptions.

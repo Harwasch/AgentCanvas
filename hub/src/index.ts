@@ -24,6 +24,7 @@ import { NodeService } from './nodes.js';
 import { ComputeService } from './compute.js';
 import { HilService } from './hil.js';
 import { TerminalService } from './terminal.js';
+import { CanvasService } from './canvas.js';
 
 const L = log('hub');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,7 @@ export async function main() {
   c.compute = new ComputeService(c);
   c.hil = new HilService(c);
   c.terminals = new TerminalService(c);
+  c.canvas = new CanvasService(c);
   // a session that ends gives back its device locks
   bus.on('event', (ev: any) => {
     if (ev.type === 'session.upsert' && ev.data.status === 'ended') c.compute.releaseAll(ev.data.id);
@@ -67,6 +69,7 @@ export async function main() {
     if (auth === 'hub') return safeEqual(tok, secrets.hubToken);
     if (auth === 'hook') return safeEqual(tok, secrets.hookToken);
     if (auth === 'cloudHook') return safeEqual(tok, secrets.cloudHookToken);
+    if (auth === 'mcp') return safeEqual(tok, secrets.mcpToken);
     return false;
   };
   const router = routes(c);
@@ -119,6 +122,7 @@ export async function main() {
   await new Promise<void>((r) => server.listen(cfg.listen.port, cfg.listen.host, r));
   L(`listening on ${cfg.tls ? 'https' : 'http'}://${cfg.listen.host}:${cfg.listen.port} (public ${cfg.publicUrl}); config ${file}`);
   L(`open ${cfg.publicUrl.replace(/\/$/, '')}/login?token=<hub token from ${path.join(cfg.dataDir, 'secrets.json')}>`);
+  L(`canvas MCP for Claude Code / Desktop: ${cfg.publicUrl.replace(/\/$/, '')}/mcp (bearer: mcpToken in ${path.join(cfg.dataDir, 'secrets.json')})`);
 
   hosts.start();
   c.repos.start();

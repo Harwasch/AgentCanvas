@@ -9,6 +9,7 @@ import type { Secrets } from './config.js';
 import { HostManager, rpath, q } from './ssh.js';
 import { CodexAdapter } from './adapters.js';
 import { log } from './events.js';
+import { CANVAS_TOOL_NAMES } from './canvas.js';
 
 const L = log('bootstrap');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +36,8 @@ export function claudeHookSettings(cfg: HubConfig) {
     // PermissionRequest may be held open by the hub while you decide (fallback when the channel is down)
     hooks[ev] = [{ ...(tool ? { matcher: '*' } : {}), hooks: [hook(ev === 'PermissionRequest' ? 130 : 15)] }];
   }
-  return { hooks };
+  // canvas tools never prompt in Claude Code: the hub applies its own tiers (confirm-tier tools wait for you in the hub)
+  return { hooks, permissions: { allow: CANVAS_TOOL_NAMES.map((n) => `mcp__hub__${n}`) } };
 }
 
 export class Bootstrapper {

@@ -1,6 +1,6 @@
 # Progress: Agent Hub v1
 
-Status: **v1 and v2 (GitHub + every design node type) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 25/25). Unit tests: 45/45. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
+Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 28/28). Unit tests: 47/47. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
 
 ## What works (verified by the smoke test, stubs on two SSH "hosts")
 
@@ -54,6 +54,17 @@ Screenshots: `docs/screenshots/v2-*.png`.
 | Subtree move | Shift-dragging the project moves its branch children by the same offset. A plain drag moves the project alone. |
 | Resize | Dragging the corner handle grows a branch node. The size persists per collapsed/expanded state. |
 | Tree layout | Each group's tree runs left → right, with curved links; groups are stacked. |
+
+## Ask Claude and canvas tools (verified by the smoke test)
+
+| Area | Verified |
+|---|---|
+| External MCP | `/mcp` refuses no token and the PWA token. With `mcpToken` it initializes and lists 17 tools. `canvas_snapshot` returns what the PWA shows: 43 nodes, layout mode, selection. The stdio bridge (`hub_channel.py --external`) lists the same tools. |
+| Live edits + undo | `canvas_select` from MCP sets the PWA selection. Ask Claude on mini-1 (stub Claude, `HUB_ROLE=assistant`) calls `canvas_snapshot` → `canvas_arrange` (column) → `canvas_add_note`. The 3 nodes line up and glow, the note appears, and the pill offers Undo. Undo deletes the note and restores the saved positions. |
+| Confirm tier | "Start a codex session on mini-2 …" → `hub_spawn_session` blocks. An approval card appears in the panel, and no session exists until Allow. After Allow, a Codex session runs on mini-2 and Claude replies "Started it". |
+| Demo | The demo build has a mock assistant: arrange, layouts, focus, session summary note, notes, to-dos, Undo, and a confirm-tier session start. |
+
+Screenshot: `docs/screenshots/ask-claude.png`.
 
 ## What remains
 

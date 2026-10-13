@@ -139,3 +139,33 @@ cluster ← machine ← device (by `hostId`/`parentId`) ← HIL plan (by `hostId
 
 ## Agent tools (hub MCP) added
 `request_review`, `suggest_followup`, `add_todo`, `list_devices`, `acquire_device`, `release_device`, `request_compute`, `run_on_host`, `run_hil`.
+
+# Ask Claude and canvas tools
+
+## Commands (hub token)
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/assistant/start` | `{hostId, accountId, prompt?}` | Session (`meta.role = "assistant"`, cwd = host home, `HUB_ROLE=assistant`) |
+| POST | `/api/canvas/view` | `{clientId, mode, nodes:[{id,kind,title,parent,x,y,w,h,ex}], selected, focusId, visible}` | What this browser shows; the canvas tools read the newest report |
+| GET | `/api/canvas/batches` | — | Last 20 edit batches `{id, by, sessionId, summary, ids, at, undone}` |
+| POST | `/api/canvas/undo/:batchId` | — | Reverts the batch: layout rows back to their previous values, created notes/files/to-dos removed, removed nodes restored |
+| POST | `/api/approvals/:id` | `{decision}` | Also decides `source: "canvas-action"` approvals (confirm tier) |
+
+Layout rows gain `size: {c?: [w,h], x?: [w,h]}` (user-resized, per collapsed/expanded state); `POST /api/layout` merges `size`, where `null` clears one state.
+
+## Events
+
+| Type | Data | PWA |
+|---|---|---|
+| `canvas.changed` | `{batchId, by, sessionId, summary[], ids[], moved, at}` | Glow on `ids`, Undo pill. If `moved` and an auto layout is showing, switches to Custom over that layout. |
+| `canvas.undone` | `{batchId, ids}` | Pill shows "undone". |
+| `canvas.ui` | `{layoutMode?, focus?, select?, by}` | Applies the layout mode, pans to the node, sets the selection. |
+| `layout.upsert` | `{nodeId, removed: true}` | Saved position deleted (by undo). |
+
+## Tools
+
+- **Hosts:** `GET /api/mcp/tools` (host token) lists the canvas tools for the channel script. Calls go through `POST /api/mcp/tools/:tool` like the other hub tools.
+- **Your own machines:** `POST /mcp` (bearer `mcpToken`) is a Streamable-HTTP MCP endpoint. It supports `initialize`, `tools/list`, `tools/call` and `ping`; notifications get 202, and responses are JSON (no SSE). `GET /mcp` returns 405. The `x-hub-client` header names the client in the audit log and the Undo pill.
+- **Confirm-tier calls** create an approval (`source: "canvas-action"`, `session_id` = the calling session or `mcp:external`) and block for up to 10 minutes. A denial or timeout returns `isError` to Claude.
+- **Audit:** every canvas tool call except the two reads is audited (`app_node_id: "canvas"`).

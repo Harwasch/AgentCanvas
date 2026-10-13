@@ -41,7 +41,7 @@ export interface Message {
 export interface Approval {
   id: string;
   session_id: string;
-  source: 'codex' | 'claude-channel' | 'claude-hook' | 'app-confirm';
+  source: 'codex' | 'claude-channel' | 'claude-hook' | 'app-confirm' | 'canvas-action';
   title: string;
   detail: string;
   data: any;

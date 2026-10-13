@@ -78,3 +78,11 @@ The stubs implement each of these as listed below. Every item needs checking aga
 45. **`nvidia-smi` query format** (`--query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is stable on real drivers but untested here (stub GPU). AMD and Jetson GPUs are not read.
 46. **Device discovery** lists `/dev/ttyACM*`, `/dev/ttyUSB*` and `/dev/serial/by-id` names, and `ip -br link` CAN interfaces. Real probes (ST-LINK `st-info --probe`, `candump -n1`, SCPI `*IDN?`) belong in each device's configured `probe` command; untested here.
 47. **Terminal pty resize** via `stty -F <client pty>` depends on the host user owning that pty (true for `ssh -tt`). tmux needs `window-size latest` (the default in tmux ≥ 3.1) so that one tmux session viewed from several browsers follows the latest resize.
+
+## Ask Claude and canvas tools
+
+48. **`permissions.allow` for MCP tools in a `--settings` file:** the hub writes `mcp__hub__canvas_*` / `mcp__hub__hub_*` there so canvas tools never prompt. To verify: that real Claude Code honors allow rules from `--settings` for servers loaded with `--mcp-config` (the stub does not prompt for MCP tools at all).
+49. **Server `instructions` as context:** the assistant's persona and the canvas guidance travel in the MCP `initialize` result. To verify: how much of this real Claude Code puts into its system context. Fallback: an `--append-system-prompt` flag on the assistant launch.
+50. **Streamable HTTP minimalism:** `/mcp` returns plain JSON, with no `Mcp-Session-Id` and no SSE. To verify: that `claude mcp add --transport http` accepts this (the spec allows a JSON response to a POST).
+51. **Hub tool list fetched at `tools/list`:** the channel script asks the hub for canvas tools (10 s timeout) when Claude lists tools. To verify: whether real Claude Code tolerates that delay at startup, and whether it re-lists after `notifications/tools/list_changed` (not sent yet).
+

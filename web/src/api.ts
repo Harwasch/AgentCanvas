@@ -141,5 +141,9 @@ export const api = {
   hilRun: (planId: string) => call('POST', `/api/hil/${enc(planId)}/run`, {}),
   hilAbort: (runId: string) => call('POST', `/api/hil/runs/${enc(runId)}/abort`, {}),
   hilRerun: (runId: string) => call('POST', `/api/hil/runs/${enc(runId)}/rerun-failed`, {}),
+  // canvas assistant
+  assistantStart: (body: { hostId: string; accountId: string; prompt?: string }) => call<Session>('POST', '/api/assistant/start', body),
+  canvasView: (body: unknown) => call('POST', '/api/canvas/view', body),
+  canvasUndo: (batchId: string) => call('POST', `/api/canvas/undo/${enc(batchId)}`, {}),
   closeTerminal: (id: string) => call('DELETE', `/api/terminals/${enc(id)}`),
 };

@@ -531,6 +531,85 @@ try {
     return `${b.name} → apps ${b.apps.map((a) => a.path).join(', ')}, linked to ${s.id}`;
   });
 
+  // ---- canvas tools: external MCP, Ask Claude (live edits + undo), confirm tier
+  const mcp = (method, params, tok = secrets().mcpToken) =>
+    fetchish('POST', `${BASE}/mcp`, { jsonrpc: '2.0', id: Math.floor(Math.random() * 1e9), method, params }, tok ? { authorization: `Bearer ${tok}` } : {});
+  const mcpCall = async (name, args = {}) => {
+    const r = JSON.parse((await mcp('tools/call', { name, arguments: args })).text);
+    if (r.error) throw new Error(r.error.message);
+    if (r.result?.isError) throw new Error(r.result.content?.[0]?.text);
+    return r.result;
+  };
+  const snapshot = async () => JSON.parse((await mcpCall('canvas_snapshot')).content[0].text);
+  const posOf = (ids) => Promise.all(ids.map((id) => page.locator(`[data-node-key="${id}"]`).evaluate((el) => ({ left: parseFloat(el.style.left), top: parseFloat(el.style.top) }))));
+
+  await check('canvas MCP for Claude Code / Desktop: /mcp with its own token, stdio bridge, snapshot of what the PWA shows', async () => {
+    if ((await mcp('tools/list', {}, '')).status !== 401) throw new Error('/mcp answered without a token');
+    if ((await mcp('tools/list', {}, secrets().hubToken)).status !== 401) throw new Error('/mcp accepted the PWA token');
+    const init = JSON.parse((await mcp('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } })).text);
+    if (!init.result?.capabilities?.tools) throw new Error(`initialize: ${JSON.stringify(init).slice(0, 200)}`);
+    const names = JSON.parse((await mcp('tools/list', {})).text).result.tools.map((t) => t.name);
+    for (const n of ['canvas_snapshot', 'canvas_arrange', 'canvas_add_note', 'hub_spawn_session']) if (!names.includes(n)) throw new Error(`tools/list lacks ${n}`);
+    await page.goto(`${BASE}/`);
+    await T('tab-canvas').waitFor({ timeout: 15000 });
+    const snap = await until(async () => { const j = await snapshot(); return j.nodes?.length > 5 && j.reportedSecondsAgo < 30 && j; }, 'a fresh view report from the PWA', 20000);
+    // Claude Desktop: the same script the hub copies to hosts, run on your machine with --external
+    const out = execFileSync('python3', [path.join(ROOT, 'host-files/hub_channel.py'), '--external'], {
+      input: [{ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'desktop', version: '1' } } }, { jsonrpc: '2.0', id: 2, method: 'tools/list' }].map((m) => JSON.stringify(m)).join('\n') + '\n',
+      env: { ...process.env, HUB_MCP_URL: `${BASE}/mcp`, HUB_MCP_TOKEN: secrets().mcpToken, HUB_CA_FILE: CFG.tls?.ca || '' }, timeout: 30000,
+    }).toString().trim().split('\n').map((l) => JSON.parse(l));
+    const listed = out.find((m) => m.id === 2)?.result?.tools?.length || 0;
+    if (!listed) throw new Error(`stdio bridge: ${JSON.stringify(out).slice(0, 200)}`);
+    return `${names.length} tools; snapshot ${snap.nodes.length} nodes (${snap.layoutMode}); stdio bridge lists ${listed}`;
+  });
+
+  let pick = [];
+  await check('Ask Claude: assistant on mini-1 arranges the selected nodes live (glow + Undo pill), adds a note; Undo reverts', async () => {
+    await T('ask-button').click();
+    await T('ask-panel').waitFor({ timeout: 5000 });
+    await T('ask-host').selectOption('mini-1');
+    pick = (await snapshot()).nodes.filter((n) => ['note', 'todos', 'file'].includes(n.kind)).slice(0, 3).map((n) => n.id);
+    if (pick.length < 2) throw new Error('need two note/file/to-do nodes on the canvas');
+    await mcpCall('canvas_select', { ids: pick }); // also proves canvas.ui reaches the PWA
+    await until(async () => (await page.locator('[data-selected="1"]').count()) === pick.length, 'selection from canvas_select', 8000);
+    await until(async () => (await snapshot()).selected.length === pick.length, 'selection reported back', 8000);
+    const layoutOf = async () => { const l = (await state()).layout; return JSON.stringify(pick.map((id) => l[id] ? [l[id].x, l[id].y] : null)); };
+    const before = await layoutOf();
+    await T('ask-input').fill('Arrange the selected nodes in a column and add a note');
+    await T('ask-send').click();
+    const asst = await until(async () => (await state()).sessions.find((x) => x.meta?.role === 'assistant' && x.status !== 'ended'), 'assistant session', 30000);
+    await T('change-pill').waitFor({ timeout: 90000 });
+    const glowing = await page.locator('.node.glow').count();
+    const note = await until(async () => (await state()).cnodes.find((n) => n.type === 'note' && n.data.title === 'Arranged by Claude'), 'note from Claude', 30000);
+    await page.waitForTimeout(600);
+    const after = await posOf(pick);
+    if (!after.every((p) => Math.abs(p.left - after[0].left) < 1)) throw new Error(`not a column: ${JSON.stringify(after)}`);
+    if (!glowing) throw new Error('changed nodes did not glow');
+    await until(async () => (await page.locator('[data-testid="ask-panel"] [data-testid="msg"]').allInnerTexts()).some((t) => /Arranged \d+ nodes/.test(t)), 'assistant reply in the panel', 30000);
+    await page.screenshot({ path: path.join(SHOTS, 'ask-claude.png') });
+    await T('change-undo').click();
+    await until(async () => !(await state()).cnodes.find((n) => n.id === note.id), 'undo removes the note', 10000);
+    const back = await until(async () => { const b = await layoutOf(); return b === before && b; }, `undo restores saved positions ${before}`, 10000);
+    void back;
+    return `${asst.id} on ${asst.host_id}: ${pick.length} nodes → column (${glowing} glowing) + note; undo restored both`;
+  });
+
+  await check('Ask Claude confirm tier: starting a session waits for Allow in the panel, then runs', async () => {
+    await mcpCall('canvas_select', { ids: [] });
+    await T('ask-input').fill('Start a codex session on mini-2 to tally fixture files smoke-77');
+    await T('ask-send').click();
+    const card = page.locator('[data-testid="ask-panel"] [data-testid="approval-card"]');
+    await card.waitFor({ timeout: 60000 });
+    const ap = await until(async () => Object.values((await state()).approvals).find((a) => a.source === 'canvas-action' && a.status === 'pending'), 'pending canvas-action approval', 5000);
+    await sleep(1500);
+    if ((await state()).sessions.some((x) => x.vendor === 'codex' && /smoke-77/.test(x.title))) throw new Error('session started before you allowed it');
+    await card.locator('[data-testid="approval-allow"]').click();
+    const s = await until(async () => (await state()).sessions.find((x) => x.vendor === 'codex' && x.host_id === 'mini-2' && /smoke-77/.test(x.title)), 'codex session after Allow', 60000);
+    await until(async () => (await page.locator('[data-testid="ask-panel"] [data-testid="msg"]').allInnerTexts()).some((t) => /Started it/.test(t)), 'assistant reply', 30000);
+    await T('ask-close').click();
+    return `approval ${ap.id} → ${s.id} on mini-2`;
+  });
+
   await check('web push sent for approvals (VAPID, aes128gcm)', async () => {
     if (!pushes.length) throw new Error('no push delivered to the subscription endpoint');
     const p = pushes[0];

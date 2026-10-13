@@ -7,7 +7,7 @@ Each phase says **what you do** (logins, sudo, decisions) and gives a **prompt t
 | Phase | Where | Time | Done when |
 |---|---|---|---|
 | 0 Decide | you | 10 min | The table below is filled in |
-| 1 Hub machine | hub box | 30 min | `npm test` is green as user `hub` |
+| 1 Hub machine | hub box | 30 min | `npm test` is green under your user |
 | 2 Optional dry run | throwaway VM | 20 min | smoke 34/34 on your own hardware |
 | 3 Hosts | each host | 15 min per host | The readiness table is all ✓ |
 | 4 Config, GitHub, HTTPS, service | hub box | 30 min | The PWA opens at `https://<hub>.ts.net` on your phone |
@@ -25,7 +25,7 @@ Fill this in and keep it next to you. Every prompt below refers to it.
 | Item | Your value |
 |---|---|
 | Hub machine (always-on Linux on your tailnet), and its tailnet name | e.g. `minipc-a` → `minipc-a.<tailnet>.ts.net` |
-| Hosts (`id`, `user@machine`, code root) | e.g. `mini-1 = hub@minipc-a ~/code`, `mini-2 = hub@minipc-b ~/code` |
+| Hosts (`id`, `user@machine`, code root) | e.g. `mini-1 = you@minipc-a ~/code`, `mini-2 = you@minipc-b ~/code` |
 | Claude accounts (profiles) | e.g. `personal` → `~/.claude-personal`, `work` → `~/.claude-work` |
 | ChatGPT/Codex accounts | e.g. `personal` → `~/.codex`, `work` → `~/.codex-work` |
 | GitHub owners per account | e.g. `personal: [harwasch]`, `work: [<org>]` |
@@ -40,17 +40,20 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt in
 sudo apt install -y gh                      # or see cli.github.com for the apt repo
 gh auth login                               # so you can clone the (private) repo
 curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
-sudo adduser --disabled-password hub && sudo loginctl enable-linger hub
+sudo loginctl enable-linger $USER          # keeps the hub service running while you're logged out
 curl -fsSL https://claude.ai/install.sh | bash   # Claude Code for this bring-up (your own user)
 ```
+
+The hub runs as **your own user**. Everything it owns lives in `~/.agent-hub`: its SSH key, its secrets, and its own Claude, Codex and `gh` profiles. That keeps it separate from your everyday `~/.claude`, `~/.codex` and `~/.config/gh`, so hub sessions never share your personal logins. Keep it that way.
 
 **Prompt 1: install the hub**
 ```
 You are on the machine that will run Agent Hub. Repo: github.com/harwasch/AgentCanvas, branch claude/hub-v1.
 Read README.md ("Install on a real Linux host") and docs/RUNBOOK.md phase 1.
-1. As the user `hub` (use `sudo -iu hub`), clone the repo to ~hub/agent-hub on branch claude/hub-v1,
+1. As my own user, clone the repo to ~/agent-hub on branch claude/hub-v1,
    run `npm ci && npm run build && npm test` and show me the test summary.
-2. Create the hub's SSH key at ~hub/.agent-hub/ssh/id_ed25519 (no passphrase) and print the PUBLIC key only.
+2. Create a dedicated SSH key for the hub at ~/.agent-hub/ssh/id_ed25519 (no passphrase; not my personal
+   ~/.ssh key) and print the PUBLIC key only.
 3. Find a Chromium binary usable for app screenshots (system chromium, or the Playwright one) and tell me
    the path for config "screenshot.chromiumPath".
 Rules: do NOT run scripts/smoke.mjs, scripts/setup-test-env.sh or scripts/reset-test-env.sh on this machine
@@ -87,9 +90,9 @@ the last 40 lines of ~/.agent-hub/smoke-hub.log and your diagnosis. Don't change
 
 **Prompt 3: host readiness check**
 ```
-Agent Hub is installed at ~hub/agent-hub on this machine (hub's SSH key: ~hub/.agent-hub/ssh/id_ed25519).
+Agent Hub is installed at ~/agent-hub on this machine, under my user (hub SSH key: ~/.agent-hub/ssh/id_ed25519).
 My hosts are: <paste the hosts row from the phase-0 table>. My profiles: <paste the account rows>.
-As user `hub`, SSH to each host with that key (BatchMode=yes) and build a readiness table, one row per host:
+SSH to each host with that key (BatchMode=yes, -i ~/.agent-hub/ssh/id_ed25519) and build a readiness table, one row per host:
 ssh ok · tmux version · git · python3 version · `claude --version` · `codex --version` (and whether it is a
 packaged install) · for each Claude profile: logged in? (check `$CLAUDE_CONFIG_DIR/.credentials.json` exists or
 `claude` reports auth — never print credential contents) · for each Codex profile: `CODEX_HOME=... codex login status`
@@ -99,9 +102,8 @@ I should run on that host. Do not install or change anything on the hosts yourse
 
 ## Phase 4: config, GitHub, HTTPS, service
 
-**You:** log `gh` in once per account on the hub box, as user `hub`:
+**You:** on the hub box, under your user, log in the hub's own profiles once per account. These are separate from your personal logins:
 ```bash
-sudo -iu hub
 GH_CONFIG_DIR=~/.agent-hub/profiles/personal/gh gh auth login
 GH_CONFIG_DIR=~/.agent-hub/profiles/work/gh     gh auth login     # authorize org SSO if asked
 CLAUDE_CONFIG_DIR=~/.agent-hub/profiles/personal/claude claude    # /login: the cloud CLIs run on the hub
@@ -110,17 +112,17 @@ CODEX_HOME=~/.agent-hub/profiles/personal/codex codex login
 
 **Prompt 4: configure and start**
 ```
-In ~hub/agent-hub (as user hub), create config/hub.config.json from config/hub.config.example.json for:
+In ~/agent-hub (under my user), create config/hub.config.json from config/hub.config.example.json for:
 <paste your full phase-0 table>. Hub tailnet name: <minipc-a.xxx.ts.net>. Use listen 127.0.0.1:8443, tls null,
 publicUrl/hostCallbackUrl = https://<tailnet name>, adapters = real binaries ("claude", "codex", "gh"),
 screenshot.chromiumPath = <path from prompt 1>, per-account gh.configDir + owners, hub.claudeConfigDir /
 hub.codexHome under ~/.agent-hub/profiles/<id>/. Leave devices/hil empty for now.
 Validate the JSON, then:
-1. Write a systemd user unit ~hub/.config/systemd/user/agent-hub.service (ExecStart=/usr/bin/node
+1. Write a systemd user unit ~/.config/systemd/user/agent-hub.service (ExecStart=/usr/bin/node
    %h/agent-hub/hub/dist/index.js %h/agent-hub/config/hub.config.json, Restart=on-failure), enable and start it.
 2. Show me the exact `tailscale serve --bg --https=443 http://127.0.0.1:8443` command to run (needs sudo; I run it).
 3. Tail the hub log for 60 s: confirm every host goes online and repos are indexed; report problems with fixes.
-4. Tell me where the hub token is (~hub/.agent-hub/secrets.json, key hubToken) WITHOUT printing it.
+4. Check ~/.agent-hub/secrets.json is mode 600, and tell me where the hub token is (key hubToken) WITHOUT printing it.
 ```
 
 **You:** run the `tailscale serve` command. Then open `https://<hub>.ts.net` on your phone, sign in with the hub token, choose "Install app", and turn on notifications.
@@ -131,10 +133,10 @@ This is where reality may differ from the stubs. `docs/OPEN-QUESTIONS.md` lists 
 
 **Prompt 5: verify the Claude gating questions**
 ```
-Agent Hub runs as a systemd user service for user `hub` (repo ~hub/agent-hub, branch claude/hub-v1, log via
+Agent Hub runs as a systemd user service under my user (repo ~/agent-hub, branch claude/hub-v1, log via
 journalctl --user -u agent-hub). It now drives REAL Claude Code on host <first-light host>.
 Read docs/OPEN-QUESTIONS.md and hub/src/adapters.ts. Work through these items against the real CLI, one at a
-time, using the hub's API (token in ~hub/.agent-hub/secrets.json; don't print it) and by attaching to the tmux
+time, using the hub's API (token in ~/.agent-hub/secrets.json; don't print it) and by attaching to the tmux
 session on the host read-only (`tmux capture-pane`) to see what the TUI shows:
 #1 dev channel + --remote-control together, and whether server:hub resolves from --mcp-config;
 #8/#9/#10 startup prompts, ready detection, Remote Control URL scrape;
@@ -153,7 +155,7 @@ Stop and ask me before anything that needs my login or sudo, and before any chan
 
 **Prompt 6**
 ```
-Same setup as before (Agent Hub service as user hub, branch claude/hub-v1). Verify against the real tools,
+Same setup as before (Agent Hub as a systemd user service under my user, ~/agent-hub, branch claude/hub-v1). Verify against the real tools,
 recording results in docs/OPEN-QUESTIONS.md and fixing adapters where needed (build, test, restart, commit, push):
 Codex: #24 `codex app-server daemon start` on <host>, #25 WebSocket over `codex app-server proxy`, #23 the
 daemon shared with the ChatGPT desktop app, #28/#29 approvals and turn/interrupt, #31 the managed
@@ -185,7 +187,7 @@ If this fails, open question #50 is the likely cause (whether `claude mcp add --
 **Prompt 8**
 ```
 On host <bench host> I have: <list devices: e.g. ST-LINK V3SET on /dev/ttyACM0, PCAN-USB FD as can0>.
-Add them to that host's "devices" in ~hub/agent-hub/config/hub.config.json with real probe commands (exit code =
+Add them to that host's "devices" in ~/agent-hub/config/hub.config.json with real probe commands (exit code =
 status; e.g. `st-info --probe | grep -q serial`, `ip link show can0 | grep -q UP`). Then write a HIL runner
 script in my repo <repo path> (hil/run.sh) that wraps my existing test command <command> and prints the hub
 protocol: `##hil plan <n>`, `##hil test <id> <req> <name>`, `##hil pass|fail|skip <id> <ms> [reason]`, honoring
@@ -200,7 +202,7 @@ Never actuate hardware outside the runner I approve.
 
 **Prompt: triage**
 ```
-Agent Hub (user hub, ~hub/agent-hub, branch claude/hub-v1) misbehaves: <what you saw, which node/session, time>.
+Agent Hub (systemd user service under my user, ~/agent-hub, branch claude/hub-v1) misbehaves: <what you saw, which node/session, time>.
 Read the last 300 lines of `journalctl --user -u agent-hub`, the relevant docs/OPEN-QUESTIONS.md items and
 docs/DECISIONS.md, reproduce if you can, and propose the smallest fix. Show me the diff before committing.
 ```

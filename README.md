@@ -94,16 +94,17 @@ Edits from those clients show up live in every open PWA, labelled with the clien
 
 ## Install on a real Linux host (the always-on mini PC)
 
-The hub runs as an ordinary user. It needs no root and no API keys: every turn runs through the official `claude` and `codex` binaries, signed in with your subscriptions.
+The hub runs as an ordinary user (yours). It needs no root and no API keys: every turn runs through the official `claude` and `codex` binaries, signed in with your subscriptions.
 
 ### 1. User and code
 
+Run the hub as your own user. It keeps everything in `~/.agent-hub`: its SSH key, its secrets, and its own Claude, Codex and `gh` profiles, separate from your personal ones. On a machine other people use, a dedicated unprivileged user (`sudo adduser --disabled-password hub`) gives more isolation; the steps are the same.
+
 ```bash
-sudo adduser --disabled-password hub          # the hub's own user; no sudo
-sudo -iu hub
-git clone <this repo> agent-hub && cd agent-hub
+git clone <this repo> ~/agent-hub && cd ~/agent-hub
 npm ci && npm run build && npm test
-ssh-keygen -t ed25519 -f ~/.agent-hub/ssh/id_ed25519 -N ''   # the hub's SSH key
+ssh-keygen -t ed25519 -f ~/.agent-hub/ssh/id_ed25519 -N ''   # the hub's own SSH key (not your personal one)
+sudo loginctl enable-linger $USER                             # keep the hub service running when you're logged out
 ```
 
 ### 2. Hosts (each mini PC, cloud VM, GPU node, laptop WSL2)
@@ -203,7 +204,7 @@ The hub will not serve plain HTTP on a non-loopback address unless `publicUrl` i
 node hub/dist/index.js config/hub.config.json
 # or as a user service:
 systemctl --user enable --now agent-hub   # ExecStart=/usr/bin/node %h/agent-hub/hub/dist/index.js %h/agent-hub/config/hub.config.json
-loginctl enable-linger hub                 # keep it running without a login session
+loginctl enable-linger $USER               # keep it running without a login session
 ```
 
 Open `https://<publicUrl>/` and paste the hub token, or use the one-time link `https://<publicUrl>/login?token=<hubToken>`. The token is in `~/.agent-hub/secrets.json` (generated on first start, along with the hook secret and the VAPID push keys). Then install the PWA from the browser menu and turn on notifications.

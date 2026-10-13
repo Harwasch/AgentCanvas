@@ -30,7 +30,7 @@
     {
       "id": "mini-1",
       "label": "mini-1",
-      "target": "hub@minipc-a",
+      "target": "you@minipc-a",
       "color": "#43D1B0",
       "roots": [
         "~/code"
@@ -75,7 +75,7 @@
     {
       "id": "mini-2",
       "label": "mini-2",
-      "target": "hub@minipc-b",
+      "target": "you@minipc-b",
       "color": "#A6E15A",
       "roots": [
         "~/code"

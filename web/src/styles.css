@@ -47,10 +47,14 @@ input, textarea, select { font-family: inherit; }
 
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,255,255,.45) } 70% { box-shadow: 0 0 0 7px rgba(255,255,255,0) } 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0) } }
 @keyframes spin { to { transform: rotate(360deg) } }
-@property --a { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
-@keyframes sweep { to { --a: 360deg } }
 @keyframes breathe { 0%, 100% { opacity: .18 } 50% { opacity: .6 } }
-.ring { position: absolute; inset: -4px; border-radius: 19px; padding: 3px; pointer-events: none; z-index: 2; background: conic-gradient(from var(--a), transparent 0deg, transparent 210deg, currentColor 330deg, transparent 360deg); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: sweep 2.4s linear infinite; }
+/* running ring: a static conic gradient on an oversized child that rotates (transform only, on the compositor); the
+   parent clips it to the rounded band. Paused off-screen (.still) and below the live zoom (.world.lowz). */
+.ring { position: absolute; inset: -4px; border-radius: 19px; padding: 3px; pointer-events: none; z-index: 2; overflow: hidden; -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+.ring > i { position: absolute; inset: -100%; background: conic-gradient(transparent 0deg, transparent 210deg, currentColor 330deg, transparent 360deg); animation: spin 2.4s linear infinite; }
+/* stopped (not just paused) off-screen and when zoomed out: a running animation makes its element a compositor layer,
+   and every layer makes each paint's layerization of the whole canvas more expensive */
+.halo.still, .ring.still > i, .world.lowz .ring > i, .world.lowz .halo, .world.lowz .spin { animation: none; }
 @keyframes loud { 0%, 100% { opacity: .35 } 50% { opacity: .9 } }
 .loud { position: absolute; inset: -3px; border-radius: 17px; pointer-events: none; box-shadow: 0 0 0 3px #FFD23F, 0 0 34px 6px rgba(255,210,63,.55); animation: loud 1.6s ease-in-out infinite; }
 .halo { position: absolute; inset: -2px; border-radius: 17px; pointer-events: none; box-shadow: 0 0 0 2px currentColor, 0 0 28px 4px currentColor; animation: breathe 2.4s ease-in-out infinite; }
@@ -72,9 +76,12 @@ input, textarea, select { font-family: inherit; }
 .chip:hover { background: #1A1C21; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 .view { position: absolute; left: 0; top: 88px; right: 0; bottom: 0; overflow: hidden; }
-.viewport { position: absolute; inset: 0; overflow: hidden; background-color: #0B0C0E; background-image: radial-gradient(circle, #24272D 1px, transparent 1.3px); touch-action: none; }
+.viewport { position: absolute; inset: 0; overflow: hidden; background-color: #0B0C0E; touch-action: none; }
+.viewport > .grid { position: absolute; inset: -60px; background-image: radial-gradient(circle, #24272D 1px, transparent 1.3px); pointer-events: none; will-change: transform; }
 .world { position: absolute; left: 0; top: 0; width: 10px; height: 10px; transform-origin: 0 0; will-change: transform; }
-.node { position: absolute; box-sizing: border-box; border-radius: 16px; }
+.node { position: absolute; box-sizing: border-box; border-radius: 16px; cursor: grab; transition: left .3s ease, top .3s ease, width .2s ease, height .2s ease, opacity .2s; }
+/* set on the moved elements during a drag / resize (the canvas applies the live box through refs) */
+.node.dragging, .node.resizing { transition: none; z-index: 50 !important; }
 .node.dragging { cursor: grabbing; }
 .node.selected::after { content: ''; position: absolute; inset: -5px; border: 1.5px solid #E7E8EA; border-radius: 20px; box-shadow: 0 0 0 4px rgba(231,232,234,.08); pointer-events: none; z-index: 30; }
 .node .rz { position: absolute; right: -9px; bottom: -9px; width: 20px; height: 20px; cursor: nwse-resize; z-index: 31; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; touch-action: none; }

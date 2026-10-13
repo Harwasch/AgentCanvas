@@ -2,16 +2,18 @@
 //   Mouse: left-drag on empty canvas selects (shift adds), right- or middle-drag pans, right-click opens the add menu.
 //   Nodes: drag moves the node (or the whole selection); shift-drag also moves every descendant.
 //   Touch: one finger pans or drags a node, two fingers pinch.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { ViewportCtx } from '../nodes/common';
+import { ViewportCtx, useInView } from '../nodes/common';
 import { NodeView } from '../nodes/NodeView';
-import { hub, setExpanded, setLayoutMode, toast, ui, useHub, useUI } from '../store';
+import { hub, setExpanded, setLayoutMode, toast, ui, useHub, useUI, type HubData } from '../store';
 import { CLOUD_NAMES, Icon, computeColor, computeKey, isActive, useIsPhone } from '../ui';
-import { applySaved, autoLayout, bbox, buildGraph, clipSeg, type Box, type GNode, type Graph, type NodeSize } from './layout';
-import { centerOn, clampZ, fitBox, useView, view, zoomAt } from './view';
+import { applySaved, autoLayout, bbox, buildGraph, clipSeg, graphKey, type Box, type GNode, type Graph, type Kind, type NodeSize } from './layout';
+import { LIVE_ZOOM, centerOn, clampZ, fitBox, useView, view, zoomAt } from './view';
 
 const GRID = 22;
+/** the grid layer overhangs the viewport by this much on each side (≥ the largest grid step, 22 × 2.5) */
+const GRID_PAD = 60;
 const CLIENT_ID = Math.random().toString(36).slice(2, 10);
 
 function nodeText(n: GNode): string {
@@ -39,63 +41,122 @@ function nodeText(n: GNode): string {
   }
 }
 
+type NodeActs = {
+  down: (e: React.PointerEvent, id: string) => void;
+  ctx: (e: React.MouseEvent, id: string, kind: string) => void;
+  rzDown: (e: React.PointerEvent, id: string) => void;
+  rzReset: (id: string) => void;
+  reg: (id: string, el: HTMLDivElement | null) => void;
+};
+
+/** '' | 'loud' | 'run <color>': a session node's attention ring, read per node so other nodes never re-render for it */
+function sessionLook(h: HubData, kind: string, ref: string): string {
+  if (kind !== 'session') return '';
+  const s = h.sessions[ref];
+  if (!s) return '';
+  if (s.status === 'waiting') return 'loud';
+  for (const a of Object.values(h.approvals)) if (a.status === 'pending' && a.session_id === ref) return 'loud';
+  return s.status === 'running' ? `run ${computeColor(computeKey(s), h.hosts)}` : '';
+}
+
+/** The running session's halo and sweeping ring; both stop while the node is off-screen (and below the live zoom, in CSS). */
+function RunRing({ color }: { color: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const inView = useInView(ref, useContext(ViewportCtx));
+  const still = inView ? '' : ' still';
+  return (
+    <>
+      <span aria-hidden="true" className={`halo${still}`} style={{ color }} />
+      <span ref={ref} aria-hidden="true" className={`ring${still}`} style={{ color }}><i /></span>
+    </>
+  );
+}
+
+/**
+ * One node on the canvas. Memoized on primitive props: a drag tick, a pan or an unrelated hub event renders none of
+ * these. Selection, glow and a session's ring are read here, per node. While a node is dragged or resized the canvas
+ * moves its element directly (a held animation / inline size, through refs) and commits the new box once on pointerup.
+ */
+const NodeWrap = memo(function NodeWrap({ id, kind, refId, x, y, w, h, op, ex, phone, acts }: {
+  id: string; kind: Kind; refId: string; x: number; y: number; w: number; h: number; op: number; ex: boolean; phone: boolean; acts: NodeActs;
+}) {
+  const sel = useUI((u) => !!u.selected[id]);
+  const lit = useUI((u) => !!u.glow[id]);
+  const look = useHub((hd) => sessionLook(hd, kind, refId));
+  const reg = useCallback((el: HTMLDivElement | null) => acts.reg(id, el), [acts, id]);
+  const loud = look === 'loud';
+  const color = look.startsWith('run ') ? look.slice(4) : '';
+  return (
+    <div
+      ref={reg}
+      className={`node${sel ? ' selected' : ''}${lit ? ' glow' : ''}`}
+      data-node={kind}
+      data-node-key={id}
+      data-selected={sel ? '1' : undefined}
+      style={{ left: x, top: y, width: w, height: h, opacity: op, zIndex: ex ? 20 : sel ? 8 : loud ? 5 : 1 }}
+      onPointerDown={(e) => acts.down(e, id)}
+      onContextMenu={(e) => acts.ctx(e, id, kind)}
+    >
+      {color ? <RunRing color={color} /> : null}
+      {loud ? <span aria-hidden="true" className="loud" /> : null}
+      <NodeView kind={kind} id={id} refId={refId} mode={ex ? 'expanded' : 'collapsed'} />
+      {!phone ? (
+        <div className="rz" data-testid="resize-handle" title="Drag to resize · double-click to reset" onPointerDown={(e) => acts.rzDown(e, id)} onDoubleClick={(e) => { e.stopPropagation(); acts.rzReset(id); }}>
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M9 1L1 9M9 5L5 9" stroke="#8A8F98" strokeWidth="1.4" strokeLinecap="round" /></svg>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+/** Edge geometry: a curved link in the left → right tree, else a straight segment clipped to both boxes. */
+function edgeGeom(a: Box, b: Box, tree: boolean): { d: string } | { x1: number; y1: number; x2: number; y2: number } | null {
+  if (tree && b.x > a.x + a.w + 20) {
+    const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
+    return { d: `M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}` };
+  }
+  return clipSeg(a, b);
+}
+
+/** pending approvals → session ids, as a stable string (the graph only needs who is waiting) */
+const attentionKeyOf = (h: HubData) => Object.values(h.approvals).filter((a) => a.status === 'pending').map((a) => a.session_id).sort().join(',');
+
 export function Canvas() {
-  const hosts = useHub((h) => h.hosts);
-  const checkouts = useHub((h) => h.checkouts);
-  const sessions = useHub((h) => h.sessions);
-  const nodes = useHub((h) => h.nodes);
-  const approvals = useHub((h) => h.approvals);
-  const projects = useHub((h) => h.projects);
-  const branches = useHub((h) => h.branches);
-  const machines = useHub((h) => h.machines);
-  const devices = useHub((h) => h.devices);
-  const cnodes = useHub((h) => h.cnodes);
-  const todos = useHub((h) => h.todos);
-  const grants = useHub((h) => h.grants);
-  const hilPlans = useHub((h) => h.hilPlans);
+  // the graph depends on a structural key, not on whole maps: a session's last_event or a grant's usage tick does not rebuild it
+  const gKey = useHub(graphKey);
+  const attentionKey = useHub(attentionKeyOf);
   const saved = useHub((h) => h.layout);
   const ready = useHub((h) => h.ready);
   const mode = useUI((u) => u.layoutMode);
   const customBase = useUI((u) => u.customBase);
-  const glow = useUI((u) => u.glow);
-  const focusId = useUI((u) => u.focusId);
   const expanded = useUI((u) => u.expanded);
   const search = useUI((u) => u.search);
   const filter = useUI((u) => u.filter);
   const panTo = useUI((u) => u.panTo);
-  const selected = useUI((u) => u.selected);
   const phone = useIsPhone();
+  const q = search.trim().toLowerCase();
+  // while searching, node text can change with any hub event
+  const searchDep = useHub((h) => (q ? h : null));
 
   const vpRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const marqueeRef = useRef<HTMLDivElement>(null);
   const [vpEl, setVpEl] = useState<HTMLElement | null>(null);
 
-  const attention = useMemo(() => {
-    const a: Record<string, boolean> = {};
-    Object.values(approvals).forEach((x) => { if (x.status === 'pending') a[x.session_id] = true; });
-    return a;
-  }, [approvals]);
-
-  // machines tick often: only their membership matters for the graph
-  const machineKeys = useMemo(() => Object.values(machines).map((m) => `${m.id}|${m.kind}|${m.label}|${m.color}`).join(','), [machines]);
+  const attention = useMemo(() => Object.fromEntries(attentionKey ? attentionKey.split(',').map((id) => [id, true]) : []) as Record<string, boolean>, [attentionKey]);
   // user-resized sizes: only their values matter for the graph, not every position save
   const sizesKey = useMemo(() => JSON.stringify(Object.entries(saved).filter(([, l]) => l.size && Object.keys(l.size).length).map(([k, l]) => [k, l.size])), [saved]);
   const sizes = useMemo(() => Object.fromEntries(JSON.parse(sizesKey)) as Record<string, NodeSize>, [sizesKey]);
-  const G = useMemo(() => buildGraph({ hosts, checkouts, sessions, nodes, projects, branches, machines: hub.get().machines, devices, cnodes, todos, grants, hilPlans, expanded, phone, attention, sizes }),
-    [hosts, checkouts, sessions, nodes, projects, branches, machineKeys, devices, cnodes, todos, grants, hilPlans, expanded, phone, attention, sizes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const G = useMemo(() => buildGraph({ ...hub.get(), expanded, phone, attention, sizes }), [gKey, expanded, phone, attention, sizes]); // eslint-disable-line react-hooks/exhaustive-deps
   const auto = useMemo(() => autoLayout(mode === 'custom' ? customBase : mode, G), [mode, customBase, G]);
   const GRef = useRef(G);
   GRef.current = G;
 
   const [local, setLocal] = useState<Record<string, { x: number; y: number }>>({});
-  // live drag / resize values also sit in refs: end() reads them there, never from a render's (possibly stale) closure
-  const [drag, setDragState] = useState<Record<string, { x: number; y: number }> | null>(null);
-  const [resizing, setResizingState] = useState<{ id: string; w: number; h: number } | null>(null);
+  // live drag / resize values sit in refs only (applied to the DOM directly); end() commits them to state once
   const dragRef = useRef<Record<string, { x: number; y: number }> | null>(null);
   const resizingRef = useRef<{ id: string; w: number; h: number } | null>(null);
-  const setDrag = (v: Record<string, { x: number; y: number }> | null) => { dragRef.current = v; setDragState(v); };
-  const setResizing = (v: { id: string; w: number; h: number } | null) => { resizingRef.current = v; setResizingState(v); };
-  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   useEffect(() => { setLocal({}); }, [mode]);
 
   const pos = useMemo(() => {
@@ -103,39 +164,100 @@ export function Canvas() {
     if (mode === 'custom') p = applySaved(p, G, saved);
     const out: Record<string, Box> = { ...p };
     Object.keys(local).forEach((id) => { if (out[id]) out[id] = { ...out[id], ...local[id] }; });
-    if (drag) Object.keys(drag).forEach((id) => { if (out[id]) out[id] = { ...out[id], ...drag[id] }; });
-    if (resizing && out[resizing.id]) out[resizing.id] = { ...out[resizing.id], w: resizing.w, h: resizing.h };
     return out;
-  }, [auto, mode, G, saved, local, drag, resizing]);
+  }, [auto, mode, G, saved, local]);
   const posRef = useRef(pos);
   posRef.current = pos;
 
-  // tell the hub what this view shows, so Claude's canvas tools see the same positions and selection
+  // ---- view report: tell the hub what this view shows, so Claude's canvas tools see the same positions and selection.
+  // Debounced (camera moves too), skipped when unchanged, paused while the page is hidden; the hub prefers visible pages.
+  const viewPayload = useRef<() => Record<string, unknown> | null>(() => null);
+  viewPayload.current = () => {
+    if (!ready) return null;
+    const v = view.get();
+    const u = ui.get();
+    const p = posRef.current;
+    const nodes = G.nodes.filter((n) => p[n.id]).map((n) => {
+      const b = p[n.id];
+      return { id: n.id, kind: n.kind, title: nodeText(n).replace(/\s+/g, ' ').trim().slice(0, 100), parent: n.parent, x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h), ex: !!u.expanded[n.id] };
+    });
+    const visible = v.z > 0 ? { x: Math.round(-v.x / v.z), y: Math.round(-v.y / v.z), w: Math.round(v.w / v.z), h: Math.round(v.h / v.z) } : null;
+    return { mode, nodes, selected: Object.keys(u.selected), focusId: u.focusId, visible };
+  };
+  const scheduleView = useRef<() => void>(() => {});
   useEffect(() => {
-    if (!ready) return;
-    const t = setTimeout(() => {
-      const v = view.get();
-      const nodes = G.nodes.filter((n) => pos[n.id]).map((n) => {
-        const p = pos[n.id];
-        return { id: n.id, kind: n.kind, title: nodeText(n).replace(/\s+/g, ' ').trim().slice(0, 100), parent: n.parent, x: Math.round(p.x), y: Math.round(p.y), w: Math.round(p.w), h: Math.round(p.h), ex: !!expanded[n.id] };
-      });
-      const visible = v.z > 0 ? { x: Math.round(-v.x / v.z), y: Math.round(-v.y / v.z), w: Math.round(v.w / v.z), h: Math.round(v.h / v.z) } : null;
-      api.canvasView({ clientId: CLIENT_ID, mode, nodes, selected: Object.keys(selected), focusId, visible }).catch(() => { /* offline */ });
-    }, 700);
-    return () => clearTimeout(t);
-  }, [ready, G, pos, selected, focusId, mode, expanded]);
+    let timer: number | undefined;
+    let last = '';
+    let lastBody: Record<string, unknown> | null = null;
+    const send = (force: boolean, shown = !document.hidden) => {
+      window.clearTimeout(timer);
+      const body = shown ? viewPayload.current() : lastBody;
+      if (!body) return;
+      const key = JSON.stringify(body);
+      const focused = shown && document.hasFocus();
+      if (!force && key === last) return;
+      last = shown ? key : ''; // after hiding, the next visible report always goes out
+      lastBody = body;
+      api.canvasView({ clientId: CLIENT_ID, ...body, pageVisible: shown, focused }, { keepalive: !shown }).catch(() => { last = ''; /* offline: resent on the next change */ });
+    };
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (document.hidden) return; // sent once when the page is visible again
+      timer = window.setTimeout(() => send(false), 700);
+    };
+    scheduleView.current = schedule;
+    const onVis = () => send(true, !document.hidden);
+    const onFocus = () => { if (!document.hidden) send(true); };
+    let prev = ui.get();
+    const offUi = ui.subscribe(() => {
+      const u = ui.get();
+      if (u.selected !== prev.selected || u.focusId !== prev.focusId || u.expanded !== prev.expanded) schedule();
+      prev = u;
+    });
+    const offView = view.subscribe(schedule);
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onFocus);
+    return () => {
+      window.clearTimeout(timer);
+      offUi(); offView();
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onFocus);
+    };
+  }, []);
+  useEffect(() => { scheduleView.current(); }, [ready, G, pos, mode]);
 
-  // ---- camera → DOM (no React re-render while panning)
+  // ---- camera → DOM (no React re-render while panning). The dot grid is its own layer, moved by transform (a
+  // background-position change would repaint). During a pan or pinch both are held by running animations (holdCamera).
+  const gridRef = useRef<HTMLDivElement>(null);
+  const camHold = useRef<{ world: Animation; grid: Animation } | null>(null);
+  const applyCam = useRef<() => void>(() => {});
   useLayoutEffect(() => {
+    let lastStep = 0;
     const apply = () => {
       const v = view.get();
-      if (worldRef.current) worldRef.current.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.z})`;
-      if (vpRef.current) {
-        const step = GRID * v.z * (v.z < 0.3 ? 4 : v.z < 0.6 ? 2 : 1);
-        vpRef.current.style.backgroundSize = `${step}px ${step}px`;
-        vpRef.current.style.backgroundPosition = `${v.x}px ${v.y}px`;
+      const h = camHold.current;
+      // while held (zooming), the grid keeps the spacing it was painted with and only moves; it is repainted at the end
+      const step = h && lastStep ? lastStep : GRID * v.z * (v.z < 0.3 ? 4 : v.z < 0.6 ? 2 : 1);
+      const mod = (a: number) => ((a % step) + step) % step;
+      const tf = `translate(${v.x}px, ${v.y}px) scale(${v.z})`;
+      const gtf = `translate(${mod(v.x + GRID_PAD)}px, ${mod(v.y + GRID_PAD)}px)`;
+      if (h && h.world.effect instanceof KeyframeEffect && h.grid.effect instanceof KeyframeEffect) {
+        h.world.effect.setKeyframes([{ transform: tf }, { transform: tf }]);
+        h.grid.effect.setKeyframes([{ transform: gtf }, { transform: gtf }]);
+      } else {
+        if (worldRef.current) worldRef.current.style.transform = tf;
+        if (gridRef.current) gridRef.current.style.transform = gtf;
+      }
+      // below the live zoom the ring / halo animations stop (class only: no React render)
+      worldRef.current?.classList.toggle('lowz', v.z < LIVE_ZOOM);
+      if (gridRef.current && step !== lastStep) {
+        lastStep = step;
+        gridRef.current.style.backgroundSize = `${step}px ${step}px`;
       }
     };
+    applyCam.current = apply;
     apply();
     return view.subscribe(apply);
   }, []);
@@ -183,6 +305,10 @@ export function Canvas() {
       const inner = t.closest?.('[data-wheel="inner"]') as HTMLElement | null;
       if (inner && !e.ctrlKey && !e.metaKey) return; // let transcripts scroll
       e.preventDefault();
+      // a burst of wheel events moves the camera like a pan: held by animations until it settles
+      holdCamera(true);
+      window.clearTimeout(wheelEnd);
+      wheelEnd = window.setTimeout(() => { if (!gesture.current && !pinch.current) holdCamera(false); }, 200);
       const r = el.getBoundingClientRect();
       const cx = e.clientX - r.left, cy = e.clientY - r.top;
       const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
@@ -194,9 +320,151 @@ export function Canvas() {
         zoomAt(Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)), cx, cy);
       }
     };
+    let wheelEnd: number | undefined;
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    return () => { window.clearTimeout(wheelEnd); el.removeEventListener('wheel', onWheel); };
   }, []);
+
+  // ---- live gesture → DOM (no React render per pointer move)
+  // A drag moves the nodes with a running Web Animation whose keyframes are replaced each tick: a running transform
+  // animation is composited with "assumed overlap", so a tick neither repaints nor re-layerizes the canvas (setting an
+  // inline transform would, once per frame). Edges touching the moved nodes are hidden and drawn by copies in an
+  // overlay that is itself held by a running animation; only that overlay repaints.
+  const els = useRef(new Map<string, HTMLDivElement>());
+  const liveSvgRef = useRef<SVGSVGElement>(null);
+  /** edges touching the nodes being moved / resized: the original element and its live copy */
+  const liveEdges = useRef<{ from: string; to: string; el: SVGElement; copy: SVGElement }[]>([]);
+  const liveAnims = useRef(new Map<string, Animation>());
+  const overlayAnim = useRef<Animation | null>(null);
+  /** ids whose element carries live styles (animation / size / class) */
+  const settleIds = useRef<string[]>([]);
+  /** a gesture's result was committed to state: its commit's layout effect settles the live styles */
+  const settlePending = useRef(false);
+  const gestureBusy = (on: boolean, cursor?: string) => {
+    // .world ignores the pointer during gestures so iframes and inner handlers never steal it
+    if (worldRef.current) worldRef.current.style.pointerEvents = on ? 'none' : '';
+    if (vpRef.current) vpRef.current.style.cursor = cursor || '';
+  };
+  const hold = (el: Element, tf: string) => el.animate?.([{ transform: tf }, { transform: tf }], { duration: 1e9, fill: 'forwards' }) ?? null;
+  /** pan / pinch: camera updates go to running animations (a transform change on a held layer neither repaints nor re-layerizes) */
+  const holdCamera = (on: boolean) => {
+    const w = worldRef.current, g = gridRef.current;
+    if (on) {
+      if (camHold.current || !w || !g) return;
+      const a = hold(w, w.style.transform), b = hold(g, g.style.transform);
+      if (a && b) camHold.current = { world: a, grid: b };
+      else { a?.cancel(); b?.cancel(); }
+      return;
+    }
+    const h = camHold.current;
+    if (!h) return;
+    camHold.current = null;
+    applyCam.current(); // final camera as inline transforms (re-rastered at the final zoom), then drop the animations
+    h.world.cancel();
+    h.grid.cancel();
+  };
+  const beginLive = (ids: string[], cls: 'dragging' | 'resizing') => {
+    const set = new Set(ids);
+    const svg = svgRef.current, overlay = liveSvgRef.current;
+    liveEdges.current = [];
+    if (svg && overlay) {
+      GRef.current.edges.forEach((ed) => {
+        if (!set.has(ed.from) && !set.has(ed.to)) return;
+        const el = svg.querySelector(`[data-e="${CSS.escape(`${ed.from}>${ed.to}`)}"]`) as SVGElement | null;
+        if (!el) return;
+        const copy = el.cloneNode() as SVGElement;
+        copy.removeAttribute('data-e');
+        overlay.appendChild(copy);
+        el.style.visibility = 'hidden';
+        liveEdges.current.push({ from: ed.from, to: ed.to, el, copy });
+      });
+      if (liveEdges.current.length) {
+        // a fixed, practically invisible backdrop keeps the overlay's paint bounds constant while its lines move, so a
+        // tick repaints the overlay without re-layerizing the whole canvas (that costs ~100 ms with hundreds of nodes)
+        const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        r.setAttribute('x', '-50000'); r.setAttribute('y', '-50000'); r.setAttribute('width', '100000'); r.setAttribute('height', '100000');
+        r.setAttribute('fill', 'rgba(11,12,14,0.01)');
+        overlay.insertBefore(r, overlay.firstChild);
+        overlayAnim.current = hold(overlay, 'translate(0px, 0px)');
+      }
+    }
+    ids.forEach((id) => els.current.get(id)?.classList.add(cls));
+    settleIds.current = ids;
+  };
+  const liveBox = (id: string): Box | undefined => {
+    const b = posRef.current[id];
+    if (!b) return b;
+    const d = dragRef.current?.[id];
+    const r = resizingRef.current;
+    return { x: d ? d.x : b.x, y: d ? d.y : b.y, w: r && r.id === id ? r.w : b.w, h: r && r.id === id ? r.h : b.h };
+  };
+  const setGeom = (el: SVGElement, g: ReturnType<typeof edgeGeom>) => {
+    if (!g || ('d' in g) !== (el.tagName === 'path')) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    if ('d' in g) el.setAttribute('d', g.d);
+    else { el.setAttribute('x1', String(g.x1)); el.setAttribute('y1', String(g.y1)); el.setAttribute('x2', String(g.x2)); el.setAttribute('y2', String(g.y2)); }
+  };
+  const applyLive = () => {
+    const d = dragRef.current;
+    const r = resizingRef.current;
+    if (d) Object.keys(d).forEach((id) => {
+      const el = els.current.get(id), b = posRef.current[id];
+      if (!el || !b) return;
+      const tf = `translate(${d[id].x - b.x}px, ${d[id].y - b.y}px)`;
+      const a = liveAnims.current.get(id);
+      if (a?.effect instanceof KeyframeEffect) a.effect.setKeyframes([{ transform: tf }, { transform: tf }]);
+      else {
+        const h = hold(el, tf);
+        if (h) liveAnims.current.set(id, h);
+        else el.style.transform = tf;
+      }
+    });
+    if (r) {
+      const el = els.current.get(r.id);
+      if (el) { el.style.width = `${r.w}px`; el.style.height = `${r.h}px`; }
+    }
+    const tree = ui.get().layoutMode === 'tree';
+    liveEdges.current.forEach(({ from, to, copy }) => {
+      const a = liveBox(from), b = liveBox(to);
+      setGeom(copy, a && b ? edgeGeom(a, b, tree) : null);
+    });
+  };
+  /** drop live styles: boxes and edges come from the committed positions again (without a transition from the old spot) */
+  const settle = () => {
+    const ids = settleIds.current;
+    if (!ids.length) return;
+    settleIds.current = [];
+    ids.forEach((id) => {
+      const el = els.current.get(id), b = posRef.current[id];
+      if (!el) return;
+      if (b) { el.style.left = `${b.x}px`; el.style.top = `${b.y}px`; el.style.width = `${b.w}px`; el.style.height = `${b.h}px`; }
+      liveAnims.current.get(id)?.cancel();
+      el.style.transform = '';
+      void el.offsetWidth; // apply the final box while transitions are still off
+      el.classList.remove('dragging', 'resizing');
+    });
+    liveAnims.current.clear();
+    // the originals were re-rendered at the committed positions (or never moved): show them, drop the copies
+    liveEdges.current.forEach(({ el }) => { el.style.visibility = ''; });
+    liveEdges.current = [];
+    liveSvgRef.current?.replaceChildren();
+    overlayAnim.current?.cancel();
+    overlayAnim.current = null;
+  };
+  // after the commit that carries a gesture's result, the DOM matches React again (never mid-gesture)
+  useLayoutEffect(() => {
+    if (!settlePending.current) return;
+    settlePending.current = false;
+    settle();
+  });
+  const showMarquee = (m: { x0: number; y0: number; x1: number; y1: number } | null) => {
+    const el = marqueeRef.current;
+    if (!el) return;
+    if (!m) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.left = `${Math.min(m.x0, m.x1)}px`; el.style.top = `${Math.min(m.y0, m.y1)}px`;
+    el.style.width = `${Math.abs(m.x1 - m.x0)}px`; el.style.height = `${Math.abs(m.y1 - m.y0)}px`;
+  };
 
   // ---- pointers: pan, marquee, node drag, resize, pinch
   type Gest =
@@ -208,13 +476,20 @@ export function Canvas() {
   const gesture = useRef<Gest | null>(null);
   const pinch = useRef<null | { d: number; mx: number; my: number }>(null);
   const ctxUntil = useRef(0); // swallow the contextmenu event that follows a right-button gesture (Windows fires it on mouseup)
-  const [panning, setPanning] = useState(false);
 
   const localXY = (e: { clientX: number; clientY: number }) => {
     const r = vpRef.current!.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
   const isMouse = (e: React.PointerEvent) => e.pointerType === 'mouse';
+
+  /** abandon a drag / resize / marquee in progress (a second finger turns it into a pinch) */
+  const cancelLive = () => {
+    dragRef.current = null;
+    resizingRef.current = null;
+    showMarquee(null);
+    settle();
+  };
 
   const capture = (e: React.PointerEvent) => {
     const p = localXY(e);
@@ -224,7 +499,8 @@ export function Canvas() {
       const [a, b] = Array.from(ptrs.current.values());
       pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
       gesture.current = null;
-      setDrag(null); setMarquee(null); setResizing(null);
+      cancelLive();
+      holdCamera(true);
       return null;
     }
     return p;
@@ -235,7 +511,8 @@ export function Canvas() {
     if (!p) return;
     const v = view.get();
     gesture.current = { kind: 'pan', sx: p.x, sy: p.y, vx: v.x, vy: v.y, moved: false, menu: menu ? { x: e.clientX, y: e.clientY, ...menu } : undefined, tap: !menu };
-    setPanning(true);
+    gestureBusy(true, 'grabbing');
+    holdCamera(true);
   };
 
   /** pointerdown on empty canvas */
@@ -256,8 +533,10 @@ export function Canvas() {
   };
 
   /** pointerdown on a node body */
-  const onNodeDown = (e: React.PointerEvent, n: GNode) => {
+  const onNodeDown = (e: React.PointerEvent, id: string) => {
     e.stopPropagation();
+    const n = GRef.current.byId[id];
+    if (!n) return;
     if (isMouse(e) && (e.button === 1 || e.button === 2)) return beginPan(e, e.button === 2 ? { parentId: n.id, kind: n.kind } : undefined);
     if (isMouse(e) && (e.button !== 0 || e.ctrlKey)) return;
     const p = capture(e);
@@ -268,7 +547,7 @@ export function Canvas() {
     const base = inSel ? Object.keys(sel) : [n.id];
     const ids = e.shiftKey ? subtree(GRef.current, inSel ? base : [n.id]) : base;
     const origins: Record<string, { x: number; y: number }> = {};
-    ids.forEach((id) => { const b = posRef.current[id]; if (b) origins[id] = { x: b.x, y: b.y }; });
+    ids.forEach((nid) => { const b = posRef.current[nid]; if (b) origins[nid] = { x: b.x, y: b.y }; });
     gesture.current = { kind: 'node', id: n.id, sx: p.x, sy: p.y, moved: false, shift: e.shiftKey, origins };
   };
 
@@ -302,17 +581,23 @@ export function Canvas() {
     if (!g) return;
     const dx = p.x - g.sx, dy = p.y - g.sy;
     if (!g.moved && Math.hypot(dx, dy) < 4) return;
+    const first = !g.moved;
     g.moved = true;
     const z = view.get().z;
     if (g.kind === 'pan') view.set({ x: g.vx + dx, y: g.vy + dy });
     else if (g.kind === 'node') {
+      if (first) { beginLive(Object.keys(g.origins), 'dragging'); gestureBusy(true); }
       const out: Record<string, { x: number; y: number }> = {};
       Object.keys(g.origins).forEach((id) => { out[id] = { x: Math.round(g.origins[id].x + dx / z), y: Math.round(g.origins[id].y + dy / z) }; });
-      setDrag(out);
+      dragRef.current = out;
+      applyLive();
     } else if (g.kind === 'resize') {
-      setResizing({ id: g.id, w: Math.max(160, Math.round(g.ow + dx / z)), h: Math.max(56, Math.round(g.oh + dy / z)) });
+      if (first) { beginLive([g.id], 'resizing'); gestureBusy(true); }
+      resizingRef.current = { id: g.id, w: Math.max(160, Math.round(g.ow + dx / z)), h: Math.max(56, Math.round(g.oh + dy / z)) };
+      applyLive();
     } else if (g.kind === 'marquee') {
-      setMarquee({ x0: g.sx, y0: g.sy, x1: p.x, y1: p.y });
+      if (first) gestureBusy(true);
+      showMarquee({ x0: g.sx, y0: g.sy, x1: p.x, y1: p.y });
       const v = view.get();
       const wx0 = (Math.min(g.sx, p.x) - v.x) / v.z, wx1 = (Math.max(g.sx, p.x) - v.x) / v.z;
       const wy0 = (Math.min(g.sy, p.y) - v.y) / v.z, wy1 = (Math.max(g.sy, p.y) - v.y) / v.z;
@@ -351,18 +636,23 @@ export function Canvas() {
     const moved = dragRef.current;
     const r = resizingRef.current;
     // always leave the gesture state clean, so .world never stays pointer-events: none
-    setPanning(false);
-    setMarquee(null);
-    setDrag(null);
-    setResizing(null);
-    if (!g) return;
+    dragRef.current = null;
+    resizingRef.current = null;
+    gestureBusy(false);
+    holdCamera(false);
+    showMarquee(null);
+    if (!g) return settle();
     if (g.kind === 'node') {
       if (g.moved && moved) {
+        // one commit; its layout effect drops the live transforms (settle)
+        settlePending.current = true;
         setLocal((l) => ({ ...l, ...moved }));
         saveLayout(moved);
         // like Claude's moves: a position only sticks in Custom, which starts from the auto layout that is showing
         if (ui.get().layoutMode !== 'custom') setLayoutMode('custom');
-      } else if (!g.moved) {
+        return;
+      }
+      if (!g.moved) {
         if (g.shift && e.type === 'pointerup') {
           // shift-click toggles the node in the selection
           const sel = { ...ui.get().selected };
@@ -379,8 +669,10 @@ export function Canvas() {
       const b = posRef.current[g.id];
       if (g.moved && r && b) {
         const key = ui.get().expanded[g.id] && !phone ? 'x' : 'c';
+        settlePending.current = true;
         setLocal((l) => ({ ...l, [g.id]: { x: b.x, y: b.y } }));
         saveLayout({ [g.id]: { x: b.x, y: b.y, size: { [key]: [r.w, r.h] } } });
+        return;
       }
     } else if (g.kind === 'pan') {
       if (g.menu) {
@@ -390,6 +682,7 @@ export function Canvas() {
     } else if (g.kind === 'marquee' && !g.moved) {
       ui.set({ focusId: null, selected: {} });
     }
+    settle();
   };
 
   /** double-click a resize handle: back to the default size for this state */
@@ -421,25 +714,34 @@ export function Canvas() {
     ui.set({ addMenu: { x: e.clientX, y: e.clientY, parentId, kind } });
   };
 
-  // ---- opacity from search / compute filter
-  const q = search.trim().toLowerCase();
-  const opacityOf = useCallback((n: GNode) => {
-    let o = 1;
-    if (q && !nodeText(n).toLowerCase().includes(q)) o = 0.15;
-    if (filter) {
-      if (!n.compute) o = Math.min(o, 0.45);
-      else if (n.compute !== filter) o = Math.min(o, 0.18);
-    }
-    return o;
-  }, [q, filter, cnodes, todos]); // eslint-disable-line react-hooks/exhaustive-deps
+  // stable callbacks for the memoized node wrappers (they call the latest handlers through a ref)
+  const handlers = useRef({ onNodeDown, onCtx, onResizeDown, resetSize });
+  handlers.current = { onNodeDown, onCtx, onResizeDown, resetSize };
+  const acts = useMemo<NodeActs>(() => ({
+    down: (e, id) => handlers.current.onNodeDown(e, id),
+    ctx: (e, id, kind) => handlers.current.onCtx(e, id, kind),
+    rzDown: (e, id) => handlers.current.onResizeDown(e, id),
+    rzReset: (id) => handlers.current.resetSize(id),
+    reg: (id, el) => { if (el) els.current.set(id, el); else els.current.delete(id); },
+  }), []);
 
-  const sessionCount = useMemo(() => {
-    const c: Record<string, number> = {};
-    Object.values(sessions).forEach((s) => { if (s.checkout_id && isActive(s)) c[s.checkout_id] = (c[s.checkout_id] || 0) + 1; });
-    return c;
-  }, [sessions]);
+  // ---- opacity from search / compute filter
+  const opacity = useMemo(() => {
+    const o: Record<string, number> = {};
+    G.nodes.forEach((n) => {
+      let v = 1;
+      if (q && !nodeText(n).toLowerCase().includes(q)) v = 0.15;
+      if (filter) {
+        if (!n.compute) v = Math.min(v, 0.45);
+        else if (n.compute !== filter) v = Math.min(v, 0.18);
+      }
+      o[n.id] = v;
+    });
+    return o;
+  }, [G, q, filter, searchDep]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const headers = mode === 'custom' ? [] : auto.headers;
+  const tree = mode === 'tree';
 
   return (
     <ViewportCtx.Provider value={vpEl}>
@@ -447,31 +749,29 @@ export function Canvas() {
         ref={vpRef}
         className="viewport"
         data-testid="canvas"
-        style={{ cursor: panning ? 'grabbing' : 'default' }}
         onPointerDown={onCanvasDown}
         onPointerMove={onMove}
         onPointerUp={end}
         onPointerCancel={end}
         onContextMenu={(e) => onCtx(e, null)}
       >
-        <div ref={worldRef} className="world" style={{ pointerEvents: panning || drag || marquee || resizing ? 'none' : undefined }}>
-          <svg width="1" height="1" style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none' }}>
+        <div ref={gridRef} className="grid" aria-hidden="true" />
+        <div ref={worldRef} className="world">
+          <svg ref={svgRef} width="1" height="1" style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none' }}>
             {G.edges.map((ed) => {
               const a = pos[ed.from], b = pos[ed.to];
-              if (!a || !b) return null;
-              const fa = G.byId[ed.from], fb = G.byId[ed.to];
-              if (!fa || !fb) return null;
-              const o = Math.min(opacityOf(fa), opacityOf(fb)) * (ed.op ?? 1);
-              if (mode === 'tree' && b.x > a.x + a.w + 20) {
-                // left → right tree: a smooth link from the parent's right edge to the child's left edge
-                const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
-                return <path key={`${ed.from}-${ed.to}`} d={`M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`} fill="none" stroke={ed.color} strokeWidth={1.5} strokeDasharray={ed.dash} opacity={o} />;
-              }
-              const s = clipSeg(a, b);
-              if (!s) return null;
-              return <line key={`${ed.from}-${ed.to}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={ed.color} strokeWidth={1.5} strokeDasharray={ed.dash} opacity={o} />;
+              if (!a || !b || !G.byId[ed.from] || !G.byId[ed.to]) return null;
+              const o = Math.min(opacity[ed.from] ?? 1, opacity[ed.to] ?? 1) * (ed.op ?? 1);
+              const g = edgeGeom(a, b, tree);
+              if (!g) return null;
+              const k = `${ed.from}>${ed.to}`;
+              return 'd' in g
+                ? <path key={k} data-e={k} d={g.d} fill="none" stroke={ed.color} strokeWidth={1.5} strokeDasharray={ed.dash} opacity={o} />
+                : <line key={k} data-e={k} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke={ed.color} strokeWidth={1.5} strokeDasharray={ed.dash} opacity={o} />;
             })}
           </svg>
+          {/* live copies of the edges touching dragged / resized nodes (see beginLive) */}
+          <svg ref={liveSvgRef} width="1" height="1" style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none' }} />
           {headers.map((h) => (
             <div key={h.key} style={{ position: 'absolute', left: h.x, top: h.y, display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', pointerEvents: 'none' }}>
               <span className="dot" style={{ width: 9, height: 9, background: h.color, boxShadow: `0 0 10px ${h.color}88` }} />
@@ -482,45 +782,10 @@ export function Canvas() {
           {G.nodes.map((n) => {
             const p = pos[n.id];
             if (!p) return null;
-            const ex = !!expanded[n.id];
-            const s = n.kind === 'session' ? sessions[n.ref] : null;
-            const color = s ? computeColor(computeKey(s), hosts) : '';
-            const loud = !!s && (s.status === 'waiting' || attention[s.id]);
-            const running = !!s && !loud && s.status === 'running';
-            const dragging = !!drag?.[n.id];
-            const sizing = resizing?.id === n.id;
-            const sel = !!selected[n.id];
-            const lit = !!glow[n.id];
-            return (
-              <div
-                key={n.id}
-                className={`node${dragging ? ' dragging' : ''}${sel ? ' selected' : ''}${sizing ? ' resizing' : ''}${lit ? ' glow' : ''}`}
-                data-node={n.kind}
-                data-node-key={n.id}
-                data-selected={sel ? '1' : undefined}
-                style={{
-                  left: p.x, top: p.y, width: p.w, height: p.h, opacity: opacityOf(n),
-                  zIndex: dragging || sizing ? 50 : ex && !phone ? 20 : sel ? 8 : loud ? 5 : 1, cursor: dragging ? 'grabbing' : 'grab',
-                  transition: dragging || sizing ? 'none' : 'left .3s ease, top .3s ease, width .2s ease, height .2s ease, opacity .2s',
-                }}
-                onPointerDown={(e) => onNodeDown(e, n)}
-                onContextMenu={(e) => onCtx(e, n.id, n.kind)}
-              >
-                {running ? <><span aria-hidden="true" className="halo" style={{ color }} /><span aria-hidden="true" className="ring" style={{ color }} /></> : null}
-                {loud ? <span aria-hidden="true" className="loud" /> : null}
-                <NodeView kind={n.kind} id={n.id} refId={n.ref} mode={ex && !phone ? 'expanded' : 'collapsed'} sessionCount={sessionCount[n.id] || 0} h={{ checkouts, hosts }} />
-                {!phone ? (
-                  <div className="rz" data-testid="resize-handle" title="Drag to resize · double-click to reset" onPointerDown={(e) => onResizeDown(e, n.id)} onDoubleClick={(e) => { e.stopPropagation(); resetSize(n.id); }}>
-                    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M9 1L1 9M9 5L5 9" stroke="#8A8F98" strokeWidth="1.4" strokeLinecap="round" /></svg>
-                  </div>
-                ) : null}
-              </div>
-            );
+            return <NodeWrap key={n.id} id={n.id} kind={n.kind} refId={n.ref} x={p.x} y={p.y} w={p.w} h={p.h} op={opacity[n.id] ?? 1} ex={!!expanded[n.id] && !phone} phone={phone} acts={acts} />;
           })}
         </div>
-        {marquee ? (
-          <div className="marquee" data-testid="marquee" style={{ left: Math.min(marquee.x0, marquee.x1), top: Math.min(marquee.y0, marquee.y1), width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0) }} />
-        ) : null}
+        <div ref={marqueeRef} className="marquee" data-testid="marquee" style={{ display: 'none' }} />
         {ready && !G.nodes.length ? (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
             <div style={{ textAlign: 'center', color: '#8A8F98', fontSize: 13, lineHeight: 1.6 }}>No projects, sessions or nodes yet.<br />Use <b style={{ color: '#E7E8EA' }}>+ Add</b> to start a session or place a node.</div>

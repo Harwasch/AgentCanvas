@@ -126,7 +126,7 @@ function SessionSheet() {
     if (t) {
       return (
         <div data-testid="node-sheet" style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#15171B', paddingTop: 'env(safe-area-inset-top)' }}>
-          <NodeView kind={t.kind} id={k} refId={t.ref} mode="sheet" h={h} />
+          <NodeView kind={t.kind} id={k} refId={t.ref} mode="sheet" />
         </div>
       );
     }

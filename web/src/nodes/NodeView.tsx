@@ -1,6 +1,7 @@
 // Kind → component dispatch for canvas nodes (and phone sheets).
 import type { Kind } from '../canvas/layout';
-import type { HubData } from '../store';
+import { useHub, type HubData } from '../store';
+import { isActive } from '../ui';
 import { AppNode } from './AppNode';
 import { BranchNode } from './BranchNode';
 import { CheckoutNode } from './CheckoutNode';
@@ -15,13 +16,23 @@ import { AgentRefNode, ClusterNode, DeviceNode, GrantNode, HTodoNode, NoteNode, 
 import { TerminalNode } from './TerminalNode';
 import { TodosNode } from './TodosNode';
 
-export function NodeView({ kind, id, refId, mode, sessionCount = 0, h }: {
-  kind: Kind; id: string; refId: string; mode: NodeMode; sessionCount?: number; h: Pick<HubData, 'checkouts' | 'hosts'>;
-}) {
+/** A bare checkout (no project): reads its row, host and active-session count from the store itself. */
+function CheckoutHost({ id }: { id: string }) {
+  const co = useHub((h) => h.checkouts[id]);
+  const host = useHub((h) => (co ? h.hosts[co.host_id] : undefined));
+  const sessionCount = useHub((h) => {
+    let n = 0;
+    for (const s of Object.values(h.sessions)) if (s.checkout_id === id && isActive(s)) n++;
+    return n;
+  });
+  return co ? <CheckoutNode co={co} host={host} sessionCount={sessionCount} /> : null;
+}
+
+export function NodeView({ kind, id, refId, mode }: { kind: Kind; id: string; refId: string; mode: NodeMode }) {
   switch (kind) {
     case 'session': return <SessionNode id={refId} mode={mode} />;
     case 'app': return <AppNode id={refId} />;
-    case 'checkout': return h.checkouts[refId] ? <CheckoutNode co={h.checkouts[refId]} host={h.hosts[h.checkouts[refId].host_id]} sessionCount={sessionCount} /> : null;
+    case 'checkout': return <CheckoutHost id={refId} />;
     case 'project': return <ProjectNode id={refId} mode={mode} />;
     case 'branch': return <BranchNode id={refId} mode={mode} />;
     case 'cluster': return <ClusterNode id={refId} mode={mode} />;

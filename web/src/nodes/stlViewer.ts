@@ -47,27 +47,40 @@ export function mountStl(canvas: HTMLCanvasElement, buf: ArrayBuffer, color = '#
   };
   home();
 
+  // render on demand: camera changes (OrbitControls 'change'), damping settling, resize, wireframe / reset
   let raf = 0, w = 0, h = 0;
-  const loop = () => {
-    raf = requestAnimationFrame(loop);
+  const frame = () => {
+    raf = 0;
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
     if (cw && ch && (cw !== w || ch !== h)) {
       w = cw; h = ch;
       renderer.setSize(w, h, false);
       cam.aspect = w / h; cam.updateProjectionMatrix();
     }
-    controls.update();
+    // with damping, update() keeps reporting a change (and asks for another frame) until the motion has settled
+    if (controls.update()) request();
     renderer.render(scene, cam);
   };
-  loop();
+  function request() {
+    if (!raf) raf = requestAnimationFrame(frame);
+  }
+  controls.addEventListener('change', request);
+  controls.addEventListener('start', request);
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(request) : null;
+  ro?.observe(canvas);
+  request();
   const tris = (geo.attributes.position?.count || 0) / 3;
   return {
     info: { tris },
-    setWire: (on) => { mat.wireframe = on; },
-    reset: home,
+    setWire: (on) => { mat.wireframe = on; request(); },
+    reset: () => { home(); request(); },
     snapshot: () => { try { renderer.render(scene, cam); return canvas.toDataURL('image/png'); } catch { return null; } },
     dispose: () => {
       cancelAnimationFrame(raf);
+      raf = -1; // no frame after dispose
+      ro?.disconnect();
+      controls.removeEventListener('change', request);
+      controls.removeEventListener('start', request);
       controls.dispose();
       geo.dispose(); mat.dispose();
       renderer.dispose();

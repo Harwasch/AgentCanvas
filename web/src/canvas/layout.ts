@@ -69,6 +69,37 @@ export function cnodeSize(c: HubCNode, ex: boolean): Size {
   }
 }
 
+// ------------------------------------------------------------------ structural key
+// buildGraph reads only a few fields of each entity; this key changes only when one of them does, so a session's
+// last_event, a grant's usage tick or a machine's metrics never rebuild the graph and its layout. Keys are cached per
+// collection object (an untouched collection keeps its reference in the store).
+const keyCache = new WeakMap<object, string>();
+function keyOf<T>(rec: Record<string, T>, f: (x: T) => string): string {
+  let k = keyCache.get(rec);
+  if (k === undefined) {
+    k = Object.values(rec).map(f).join('\n');
+    keyCache.set(rec, k);
+  }
+  return k;
+}
+const SEP = '\u001f';
+export function graphKey(g: Pick<HubData, 'hosts' | 'checkouts' | 'sessions' | 'nodes' | 'projects' | 'branches' | 'machines' | 'devices' | 'cnodes' | 'todos' | 'grants' | 'hilPlans'>): string {
+  return [
+    keyOf(g.hosts, (h) => [h.id, h.color].join(SEP)),
+    keyOf(g.checkouts, (c) => [c.id, c.repo_id, c.repoName, c.host_id, c.branch, (c.apps || []).map((a) => a.dir).join(',')].join(SEP)),
+    keyOf(g.sessions, (s) => [s.id, s.meta?.role === 'assistant' ? 'A' : '', s.created_at, s.status === 'waiting' ? 'w' : isActive(s) ? 'a' : 'x', s.kind, s.vendor, s.host_id, s.checkout_id, s.branch].join(SEP)),
+    keyOf(g.nodes, (n) => [n.id, n.manifest?.node?.width, n.manifest?.node?.height, n.sessionId, n.hostId, n.dir].join(SEP)),
+    keyOf(g.projects, (p) => [p.id, p.name, p.readme ? 1 : 0, p.defaultBranch].join(SEP)),
+    keyOf(g.branches, (b) => [b.id, b.projectId, b.name, b.cloud?.sessionId].join(SEP)),
+    keyOf(g.machines, (m) => [m.id, m.kind, m.label, m.color].join(SEP)),
+    keyOf(g.devices, (d) => [d.id, d.title, d.parentId, d.hostId].join(SEP)),
+    keyOf(g.hilPlans, (p) => [p.id, p.devices.join(','), p.hostId].join(SEP)),
+    keyOf(g.grants, (r) => [r.id, r.status === 'revoked' ? 'r' : '', r.sessionId, r.hostId].join(SEP)),
+    keyOf(g.cnodes, (c) => [c.id, c.type, c.createdAt, c.parentId, c.data?.status === 'dismissed' ? 'd' : '', c.data?.todoId, c.data?.kind, c.data?.hostId, c.data?.sessionId, c.data?.branchId].join(SEP)),
+    keyOf(g.todos, (t) => t.id),
+  ].join('\u001e');
+}
+
 /** Where the default-branch row of a project folds into: the project node itself. */
 const isDefault = (b: Branch, g: GraphInput) => g.projects[b.projectId]?.defaultBranch === b.name;
 

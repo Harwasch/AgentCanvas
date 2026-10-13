@@ -35,6 +35,14 @@ node scripts/smoke.mjs                # resets state, starts the hub, drives the
 
 `setup-test-env.sh` creates two local users as stand-in hosts, so do not run it on a machine you care about.
 
+### Clickable demo (no hub needed)
+
+```bash
+node scripts/build-demo.mjs        # → web/dist-demo/agent-hub-demo.html: one self-contained page
+```
+
+The page runs the real PWA against the in-page mock hub (simulated hosts, agents, GitHub, devices and the winch app), so you can open it anywhere, including as a hosted page. Locally, `?mock=1` on a normal build does the same.
+
 ## Install on a real Linux host (the always-on mini PC)
 
 The hub runs as an ordinary user. It needs no root and no API keys: every turn runs through the official `claude` and `codex` binaries, signed in with your subscriptions.

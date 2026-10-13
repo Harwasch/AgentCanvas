@@ -207,7 +207,7 @@ export function mockRawUrl(source: FileSource, path: string, sha?: string): stri
   let u = rawCache.get(key);
   if (!u) {
     const c = contentOf(pid, path, sha);
-    u = URL.createObjectURL(new Blob([c ? c.body : `mock: no file ${path}`], { type: c ? c.type : 'text/plain' }));
+    u = `data:${c ? c.type : 'text/plain'};charset=utf-8,${encodeURIComponent(c ? c.body : `mock: no file ${path}`)}`;
     rawCache.set(key, u);
   }
   return u;

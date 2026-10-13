@@ -5,7 +5,7 @@ import { startLive, startMock } from './store';
 import './styles.css';
 
 const params = new URLSearchParams(location.search);
-const mock = params.get('mock') === '1';
+const mock = params.get('mock') === '1' || import.meta.env.VITE_DEMO === '1';
 
 async function boot() {
   if (mock) {

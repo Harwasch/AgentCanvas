@@ -62,11 +62,16 @@ export function AppFrame({ node, live, width, height, reloadKey = 0, onReady }: 
       key={`${node.url}#${reloadKey}`}
       ref={iframeRef}
       title={node.title}
-      src={node.url}
+      {...(mockSrcdoc(node.url) != null ? { srcDoc: mockSrcdoc(node.url)! } : { src: node.url })}
       sandbox="allow-scripts allow-forms"
       referrerPolicy="no-referrer"
       data-ready={ready ? '1' : '0'}
       style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: '#0B0C0E', colorScheme: 'dark' }}
     />
   );
+}
+
+/** Mock/demo builds hand the app HTML over as srcdoc (works where blob: frames are blocked). */
+function mockSrcdoc(url: string): string | null {
+  return ((window as any).__mockAppHtml || {})[url] ?? null;
 }

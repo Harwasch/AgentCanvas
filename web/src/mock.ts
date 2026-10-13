@@ -132,7 +132,10 @@ ${[0, 1, 2, 3].map((i) => `<rect x="${14 + i * 154}" y="52" width="144" height="
 
 let appUrl = '';
 function getAppUrl() {
-  if (!appUrl) appUrl = URL.createObjectURL(new Blob([winchHtml], { type: 'text/html' }));
+  if (!appUrl) {
+    appUrl = URL.createObjectURL(new Blob([winchHtml], { type: 'text/html' }));
+    ((window as any).__mockAppHtml ||= {})[appUrl] = winchHtml;
+  }
   return appUrl;
 }
 
@@ -480,3 +483,17 @@ setInterval(() => {
   const files = ['apps/winch-console/ui.html', 'apps/winch-console/server.py', 'apps/winch-console/app.json'];
   addMsg('s_cc_m1', 'assistant', 'tool', `Read ${files[tick % 3]}`, { name: 'Read', input: { file_path: files[tick % 3] }, output: 'ok' });
 }, 9000);
+
+// Mock file bytes are data: URLs. Answer fetch() of them in-page, so file viewers work even where
+// the page's CSP has no connect-src (the published demo).
+if (typeof window !== 'undefined' && !(window as any).__mockDataFetch) {
+  (window as any).__mockDataFetch = true;
+  const realFetch = window.fetch.bind(window);
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const m = url.match(/^data:([^;,]+)(;charset=[^;,]+)?(;base64)?,(.*)$/s);
+    if (!m) return realFetch(input, init);
+    const bytes = m[3] ? Uint8Array.from(atob(m[4]), (ch) => ch.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(m[4]));
+    return Promise.resolve(new Response(bytes, { status: 200, headers: { 'content-type': m[1] } }));
+  };
+}

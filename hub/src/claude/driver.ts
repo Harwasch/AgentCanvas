@@ -109,7 +109,7 @@ export class ClaudeDriver {
       if (ClaudeAdapter.isReady(tail) || (i > 30 && !ClaudeAdapter.startupPrompts.some((p) => p.re.test(tail)))) ready = true;
     }
     if (!ready) throw new Error('claude did not become ready within 30 s');
-    this.c.store.upsertSession({ id, status: 'idle', last_event: 'ready' });
+    this.c.store.upsertSession({ id, status: prompt ? 'running' : 'idle', last_event: 'ready' });
     // give the channel a moment to attach, then send the first prompt
     for (let i = 0; i < 20 && !this.live.get(id)?.relayUp; i++) await sleep(250);
     if (prompt) await this.send(id, prompt);

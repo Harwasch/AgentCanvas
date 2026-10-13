@@ -29,6 +29,7 @@ async function check(name, fn) {
     say(`✓ ${name}${detail ? ` — ${detail}` : ''}`);
   } catch (e) {
     results.push({ name, ok: false, ms: Date.now() - s, detail: e.message });
+    await page?.screenshot({ path: path.join(CFG.dataDir, 'smoke-failure.png') }).catch(() => {});
     say(`✗ ${name} — ${e.message}`);
     throw e;
   }
@@ -164,9 +165,8 @@ try {
     S.cc2 = await spawnFromDialog({ vendor: 'claude', where: 'mini-2', account: 'work', checkout: co2, prompt: 'Hello from the hub on mini-2' });
     for (const k of ['cx1', 'cc1', 'cx2', 'cc2']) {
       const id = S[k].id;
-      await until(async () => (await state()).sessions.find((s) => s.id === id && s.status === 'idle'), `${k} idle after first turn`, 45000);
-      const msgs = await api('GET', `/api/sessions/${id}/messages`);
-      if (!msgs.some((m) => m.role === 'assistant' && m.kind === 'text' && m.text)) throw new Error(`${k}: no assistant reply`);
+      await until(async () => (await api('GET', `/api/sessions/${id}/messages`)).some((m) => m.role === 'assistant' && m.kind === 'text' && m.text), `${k}: assistant reply to the first prompt`, 45000);
+      await until(async () => (await state()).sessions.find((s) => s.id === id && s.status === 'idle'), `${k} idle after first turn`, 20000);
     }
     const s = await state();
     const cc = s.sessions.filter((x) => [S.cc1.id, S.cc2.id].includes(x.id));
@@ -176,11 +176,13 @@ try {
   });
   await page.screenshot({ path: path.join(SHOTS, 'desktop-canvas-sessions.png') });
 
+  // the canvas is transform-based: focus a node the way a user does (Sessions tab → row pans + expands it)
   async function openNode(id) {
+    await T('tab-sessions').click();
+    await page.locator(`[data-testid="session-row"][data-session-id="${id}"]`).click();
     const n = sessionNode(id);
-    await n.scrollIntoViewIfNeeded().catch(() => {});
-    if (!(await n.locator('[data-testid="chat-input"]').count())) await n.locator('[data-testid="node-expand"]').first().click();
     await n.locator('[data-testid="chat-input"]').waitFor({ timeout: 10000 });
+    await page.waitForTimeout(400); // pan animation
     return n;
   }
   async function chat(id, text) {
@@ -277,10 +279,21 @@ try {
 
   const appNode = () => page.locator(`[data-testid="app-node"][data-node-id="${nodeId}"]`);
   const frame = () => appNode().frameLocator('iframe');
+  // deep link, as in publish_app's preview URL and push notifications
   async function focusApp() {
-    await appNode().scrollIntoViewIfNeeded().catch(() => {});
-    await appNode().click({ position: { x: 60, y: 14 } });
+    await page.goto(`${BASE}/?focus=${nodeId}`);
+    await appNode().waitFor({ timeout: 15000 });
     await frame().locator('#set').waitFor({ timeout: 15000 });
+    await page.waitForTimeout(500);
+    // Playwright maps mouse coordinates into an iframe without the canvas's CSS scale, so zoom the
+    // camera to 100% around the (centered) node before clicking inside the app; real clicks don't need this
+    await page.evaluate(() => {
+      const view = globalThis.__view;
+      const v = view.get();
+      const cx = v.w / 2, cy = (v.h - 50) / 2, k = 1 / v.z;
+      view.set({ z: 1, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k });
+    });
+    await page.waitForTimeout(300);
   }
 
   await check('preview blocks actuate (set_speed and stop) and audits the refusal', async () => {
@@ -330,6 +343,8 @@ try {
     return `${pushes.length} pushes`;
   });
 
+  await page.locator('button', { hasText: /^Fit$/ }).first().click().catch(() => {});
+  await page.waitForTimeout(2000);
   await page.screenshot({ path: path.join(SHOTS, 'desktop-1440x900.png') });
   await check('phone layout 390×844', async () => {
     const m = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });

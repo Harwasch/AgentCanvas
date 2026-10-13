@@ -44,6 +44,15 @@ function Main() {
     if (!pref) ui.set({ layoutMode: Object.keys(layout).length ? 'custom' : 'columns' });
   }, [ready, layout]);
 
+  // deep links from push notifications and publish_app previews: /?focus=<session or app node id>
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!ready || focused.current) return;
+    focused.current = true;
+    const id = new URLSearchParams(location.search).get('focus');
+    if (id) setTimeout(() => focusNode(id, true), 50);
+  }, [ready]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;

@@ -66,7 +66,7 @@ export class ClaudeDriver {
   }
 
   private tmuxBin(hostId: string) {
-    return this.c.hosts.bin(hostId, 'tmux');
+    return q(this.c.hosts.bin(hostId, 'tmux'));
   }
 
   private async pane(s: Session): Promise<string> {
@@ -79,7 +79,7 @@ export class ClaudeDriver {
     await this.c.hosts.execOk(s.host_id!, `${this.tmuxBin(s.host_id!)} send-keys -t ${q(s.meta.tmux)} ${keys.map(q).join(' ')}`);
   }
   private async typeLine(s: Session, text: string) {
-    await this.c.hosts.execOk(s.host_id!, `${this.tmuxBin(s.host_id!)} send-keys -t ${q(s.meta.tmux)} -l ${q(text.replace(/\n/g, ' '))} && ${this.tmuxBin(s.host_id!)} send-keys -t ${q(s.meta.tmux)} Enter`);
+    await this.c.hosts.execOk(s.host_id!, `${this.tmuxBin(s.host_id!)} send-keys -t ${q(s.meta.tmux)} -l -- ${q(text.replace(/\n/g, ' '))} && ${this.tmuxBin(s.host_id!)} send-keys -t ${q(s.meta.tmux)} Enter`);
   }
 
   /** Answer one-time startup prompts through tmux, read the Remote Control URL, then deliver the first prompt. */
@@ -169,7 +169,7 @@ export class ClaudeDriver {
     const s = this.c.store.session(id);
     if (!s || l.closed || l.tail) return;
     const t = s.meta.transcript as string;
-    const p = this.c.hosts.spawn(s.host_id!, `tail -n +1 -F ${q(t)} 2>/dev/null`);
+    const p = this.c.hosts.spawn(s.host_id!, `tail -n +1 -F -- ${q(t)} 2>/dev/null`);
     l.tail = p;
     let buf = '';
     p.stdout!.on('data', (d) => {

@@ -75,6 +75,7 @@ export function validateManifest(input: unknown): ValidationResult {
       if (!['stdio', 'http'].includes(transport)) errors.push('server.transport: "stdio" or "http"');
       if (transport === 'http' && !(Number.isInteger(s.port) && s.port > 0 && s.port < 65536)) errors.push('server.port: required for http transport');
       if (s.env !== undefined && !(isObj(s.env) && Object.values(s.env).every((v) => typeof v === 'string'))) errors.push('server.env: object of strings');
+      else if (s.env !== undefined && !Object.keys(s.env).every((k) => /^[A-Z_][A-Z0-9_]*$/i.test(k))) errors.push('server.env: variable names must match [A-Za-z_][A-Za-z0-9_]*');
       server = { command: s.command, transport, port: s.port, env: s.env };
     }
   }

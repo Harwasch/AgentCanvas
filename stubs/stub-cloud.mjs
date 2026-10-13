@@ -158,8 +158,11 @@ export async function codexCloud(args) {
     return 1;
   }
   const store = readJson(codexStore(), {});
-  const flag = (n) => (args.includes(n) ? args[args.indexOf(n) + 1] : undefined);
-  const positional = args.slice(1).filter((a, i, arr) => !a.startsWith('--') && !(i > 0 && arr[i - 1].startsWith('--')));
+  // clap semantics: everything after a bare `--` is positional
+  const dd = args.indexOf('--');
+  const opts = dd >= 0 ? args.slice(0, dd) : args;
+  const flag = (n) => (opts.includes(n) ? opts[opts.indexOf(n) + 1] : undefined);
+  const positional = [...opts.slice(1).filter((a, i, arr) => !a.startsWith('--') && !(i > 0 && arr[i - 1].startsWith('--'))), ...(dd >= 0 ? args.slice(dd + 1) : [])];
   const idArg = (positional[0] || '').replace(/^https:\/\/chatgpt\.com\/codex\/tasks\//, '').replace(/[?#].*$/, '');
   const sub = args[0];
   if (sub === 'exec') {

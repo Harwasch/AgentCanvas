@@ -109,7 +109,7 @@ export const CodexAdapter = {
 
   // ---- cloud (run on the hub under the account's CODEX_HOME)
   cloudExecArgs: (o: { env: string; attempts?: number; branch?: string; prompt: string }) => [
-    'cloud', 'exec', '--env', o.env, ...(o.attempts ? ['--attempts', String(o.attempts)] : []), ...(o.branch ? ['--branch', o.branch] : []), o.prompt,
+    'cloud', 'exec', '--env', o.env, ...(o.attempts ? ['--attempts', String(o.attempts)] : []), ...(o.branch ? ['--branch', o.branch] : []), '--', o.prompt,
   ],
   parseCloudExec(stdout: string): { taskId: string; url: string } | undefined {
     const m = stdout.match(/https:\/\/chatgpt\.com\/codex\/tasks\/([A-Za-z0-9_-]+)/);

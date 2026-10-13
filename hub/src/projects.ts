@@ -14,6 +14,11 @@ import { log } from './events.js';
 const L = log('projects');
 const SEP = '\u001e';
 
+/** Strict git ref name for branch names and bases (no option-like, revision-syntax or shell characters). */
+export function validRef(s: unknown): s is string {
+  return typeof s === 'string' && /^[A-Za-z0-9._/-]{1,100}$/.test(s) && !/^[-/.]|\.\.|\/\/|[/.]$|\.lock$|@\{/.test(s) && !s.split('/').some((p) => p.startsWith('.'));
+}
+
 export interface GhRef {
   owner: string;
   repo: string;
@@ -136,7 +141,7 @@ export class ProjectService {
     await Promise.all(checkouts.map(async (x) => {
       if (!x.branch) return;
       const meta = this.c.db.get('SELECT base FROM branch_meta WHERE id=?', `${projectId}#${x.branch}`);
-      const base = meta?.base || 'main';
+      const base = validRef(meta?.base) ? meta.base : 'main';
       const p = q(x.path);
       const r = await this.c.hosts.exec(x.host_id, [
         `git -C ${p} log -8 --format='%H%x1f%s%x1f%an%x1f%ct' 2>/dev/null`, `printf '${SEP}'`,
@@ -303,7 +308,9 @@ export class ProjectService {
 
   /** New branch = a git worktree on the chosen host, optionally pushed under the host's git credentials. */
   async createBranch(o: { projectId: string; checkoutId: string; base: string; name: string; goal?: string; push?: boolean; createdBy?: string }) {
-    if (!/^[A-Za-z0-9._/-]{1,100}$/.test(o.name) || o.name.includes('..') || o.name.startsWith('/') || o.name.endsWith('/')) throw new Error('invalid branch name');
+    if (!validRef(o.name)) throw new Error('invalid branch name');
+    const base = o.base || 'main';
+    if (!validRef(base)) throw new Error('invalid base branch');
     const co = this.c.repos.checkout(o.checkoutId);
     if (!co || co.repo_id !== o.projectId) throw new Error('checkout is not part of this project');
     const id = `${o.projectId}#${o.name}`;
@@ -313,11 +320,10 @@ export class ProjectService {
     const repoName = m ? m[2] : co.path.split('/').pop();
     const wt = `${parent}/${repoName}.worktrees/${o.name.replace(/\//g, '-')}`;
     const p = q(co.path);
-    const base = o.base || 'main';
     const script = [
       `git -C ${p} fetch -q origin 2>/dev/null || true`,
       `if git -C ${p} rev-parse -q --verify ${q('refs/heads/' + o.name)} >/dev/null; then echo "branch exists" >&2; exit 3; fi`,
-      `start=$(git -C ${p} rev-parse -q --verify ${q('origin/' + base)} || git -C ${p} rev-parse -q --verify ${q(base)}) || { echo "unknown base ${base}" >&2; exit 4; }`,
+      `start=$(git -C ${p} rev-parse -q --verify ${q('origin/' + base)} || git -C ${p} rev-parse -q --verify ${q(base)}) || { echo "unknown base "${q(base)} >&2; exit 4; }`,
       `git -C ${p} worktree add -q -b ${q(o.name)} ${q(wt)} "$start"`,
       o.push ? `git -C ${q(wt)} push -q -u origin ${q(o.name)}` : 'true',
     ].join(' && ');

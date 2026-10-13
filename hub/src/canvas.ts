@@ -9,6 +9,7 @@
 import type { Ctx } from './ctx.js';
 import { newId, type Session } from './store.js';
 import { spawnSession, sendToSession } from './nodes.js';
+import { validRef } from './projects.js';
 import { log } from './events.js';
 
 const L = log('canvas');
@@ -382,6 +383,7 @@ export class CanvasService {
         const checkoutId = String(a.checkout_id || p.checkouts?.[0] || '');
         if (!checkoutId) return fail('this project has no checkout on any host');
         const base = String(a.base || p.defaultBranch || 'main');
+        if (!validRef(String(a.name ?? '')) || !validRef(base)) return fail('invalid branch or base name (letters, digits, . _ - / only)');
         if (!(await this.confirm(caller, `Create branch ${a.name} from ${base}`, `${p.name} · ${a.push ? 'pushed to GitHub' : 'local worktree'}${a.goal ? ` · ${a.goal}` : ''}`, tool, a))) return fail('the user declined creating the branch');
         const br = await this.c.projects.createBranch({ projectId: p.id, checkoutId, base, name: String(a.name), goal: a.goal, push: !!a.push, createdBy: 'agent' });
         return ok(`branch ${br.name} created`, { branchId: br.id });

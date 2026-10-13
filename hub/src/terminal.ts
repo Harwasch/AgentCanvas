@@ -12,6 +12,10 @@ const L = log('term');
 export class TerminalService {
   constructor(private c: Ctx) {}
 
+  private tmux(hostId: string) {
+    return q(this.c.hosts.bin(hostId, 'tmux'));
+  }
+
   private audit(termId: string, what: string, detail: any) {
     this.c.db.run('INSERT INTO audit (ts, app_node_id, tool, tier, caller, args, allowed, reason, result) VALUES (?,?,?,?,?,?,?,?,?)',
       Date.now(), termId, what, 'shell', 'user:you', JSON.stringify(detail), 1, '', '');
@@ -28,7 +32,7 @@ export class TerminalService {
     const agentPane = o.mode === 'agent' && s?.vendor === 'claude' && s.meta?.tmux;
     const tmux = agentPane ? String(s!.meta.tmux) : id;
     const cwd = o.cwd || s?.cwd || '~';
-    if (!agentPane) await this.c.hosts.execOk(hostId, `tmux new-session -d -s ${q(tmux)} -x 120 -y 32 -c ${rpath(cwd)}`);
+    if (!agentPane) await this.c.hosts.execOk(hostId, `${this.tmux(hostId)} new-session -d -s ${q(tmux)} -x 120 -y 32 -c ${rpath(cwd)}`);
     this.audit(id, '(terminal open)', { host: hostId, cwd, mode: agentPane ? 'agent' : 'shell', session: s?.id ?? null });
     L(`opened ${id} on ${hostId} (${agentPane ? `agent pane ${tmux}` : cwd})`);
     return this.c.nodes.putTerminal(id, o.parentId ?? s?.id ?? hostId, { hostId, cwd, mode: agentPane ? 'agent' : 'shell', sessionId: s?.id ?? null, status: 'open', tmux });
@@ -37,7 +41,7 @@ export class TerminalService {
   async close(id: string) {
     const n = this.c.nodes.get(id);
     if (!n) return;
-    if (n.data.mode === 'shell') await this.c.hosts.exec(n.data.hostId, `tmux kill-session -t ${q(n.data.tmux)}`);
+    if (n.data.mode === 'shell') await this.c.hosts.exec(n.data.hostId, `${this.tmux(n.data.hostId)} kill-session -t ${q(n.data.tmux)}`);
     this.audit(id, '(terminal close)', { host: n.data.hostId });
   }
 
@@ -50,7 +54,11 @@ export class TerminalService {
     }
     const { hostId, tmux } = n.data;
     const ttyFile = `$HOME/.agent-hub/run/${id}-${crypto.randomBytes(3).toString('hex')}.tty`;
-    const proc = this.c.hosts.spawnTty(hostId, `tty > "${ttyFile}"; stty cols 120 rows 32; tmux has-session -t ${q(tmux)} 2>/dev/null || tmux new-session -d -s ${q(tmux)} -c ${rpath(n.data.cwd || '~')}; exec tmux attach -t ${q(tmux)}`);
+    const t = this.tmux(hostId);
+    const proc = this.c.hosts.spawnTty(hostId, `tty > "${ttyFile}"; stty cols 120 rows 32; ${t} has-session -t ${q(tmux)} 2>/dev/null || ${t} new-session -d -s ${q(tmux)} -c ${rpath(n.data.cwd || '~')}; exec ${t} attach -t ${q(tmux)}`);
+    const write = (d: string | Buffer) => {
+      if (proc.stdin?.writable) proc.stdin.write(d);
+    };
     proc.stdout!.on('data', (d: Buffer) => ws.readyState === ws.OPEN && ws.send(d, { binary: true }));
     proc.stderr!.on('data', (d: Buffer) => ws.readyState === ws.OPEN && ws.send(d, { binary: true }));
     proc.on('close', () => {
@@ -58,9 +66,10 @@ export class TerminalService {
       this.c.hosts.exec(hostId, `rm -f "${ttyFile}"`).catch(() => {});
     });
     let resizeT: NodeJS.Timeout | undefined;
+    ws.on('error', (e) => L(`${id} socket: ${e.message}`));
     ws.on('message', (raw, isBinary) => {
       if (isBinary) {
-        proc.stdin!.write(raw as Buffer);
+        write(raw as Buffer);
         return;
       }
       let m: any;
@@ -69,8 +78,8 @@ export class TerminalService {
       } catch {
         return;
       }
-      if (m.type === 'input' && typeof m.data === 'string') proc.stdin!.write(m.data);
-      else if (m.type === 'resize') {
+      if (m?.type === 'input' && typeof m.data === 'string') write(m.data);
+      else if (m?.type === 'resize') {
         const cols = Math.max(20, Math.min(400, Number(m.cols) || 80));
         const rows = Math.max(5, Math.min(200, Number(m.rows) || 24));
         clearTimeout(resizeT);

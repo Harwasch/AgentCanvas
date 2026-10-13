@@ -3,6 +3,7 @@
 import type { Ctx } from './ctx.js';
 import { Router, HttpError } from './http.js';
 import { parseSource, fileMime, safePath } from './files.js';
+import { validRef } from './projects.js';
 
 export function routesV2(c: Ctx, r: Router) {
   const wrap = async <T>(f: () => Promise<T> | T, status = 409): Promise<T> => {
@@ -21,6 +22,7 @@ export function routesV2(c: Ctx, r: Router) {
   }));
   r.post('/api/branches', 'hub', (req) => wrap(() => {
     const b = req.body || {};
+    if (!validRef(String(b.name || '').trim()) || (b.base != null && b.base !== '' && !validRef(b.base))) throw new HttpError(400, 'invalid branch or base name');
     return c.projects.createBranch({ projectId: b.projectId, checkoutId: b.checkoutId, base: b.base, name: String(b.name || '').trim(), goal: b.goal, push: !!b.push });
   }));
   r.post('/api/branches/:id/refresh', 'hub', (req) => wrap(async () => {

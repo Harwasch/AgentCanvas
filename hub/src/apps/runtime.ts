@@ -6,6 +6,7 @@ import { q, rpath } from '../ssh.js';
 import { JsonRpcPeer, NdjsonDecoder } from '../jsonrpc.js';
 
 export const MCP_APPS_MIME = 'text/html;profile=mcp-app';
+export const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/i;
 
 export class AppRuntime {
   proc?: ChildProcess;
@@ -28,14 +29,22 @@ export class AppRuntime {
   }
 
   async start() {
+    const bad = Object.keys(this.env).filter((k) => !ENV_KEY.test(k));
+    if (bad.length) {
+      this.status = 'error';
+      throw new Error(`server.env: invalid variable name ${bad.map((k) => JSON.stringify(k)).join(', ')}`);
+    }
     this.status = 'starting';
     const envs = Object.entries(this.env).map(([k, v]) => `${k}=${q(v)}`).join(' ');
     const cmd = `cd ${rpath(this.dir)} && exec ${envs ? 'env ' + envs + ' ' : ''}${this.command.map(q).join(' ')}`;
     const p = this.hosts.spawn(this.hostId, cmd);
     this.proc = p;
-    const peer = new JsonRpcPeer((m) => p.stdin!.write(JSON.stringify(m) + '\n'), { timeoutMs: 30000 });
+    const peer = new JsonRpcPeer((m) => {
+      if (!p.stdin?.writable) throw new Error('app server is not running');
+      p.stdin.write(JSON.stringify(m) + '\n');
+    }, { timeoutMs: 30000 });
     this.peer = peer;
-    const dec = new NdjsonDecoder((m) => peer.handle(m), (line) => this.log(`[stdout] ${line}`));
+    const dec = new NdjsonDecoder((m) => peer.handle(m), (line, e) => this.log(`[stdout] ${line}${e instanceof SyntaxError ? '' : ` (${e.message})`}`));
     p.stdout!.on('data', (d) => dec.push(d));
     p.stderr!.on('data', (d) => this.log(String(d)));
     p.on('close', (code) => {

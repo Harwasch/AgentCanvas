@@ -250,7 +250,7 @@ export class AppService {
    * Every tool call from a node, an agent or another app passes here.
    * Agents asking for a confirm-tier tool get a confirm prompt in the hub and wait for the human.
    */
-  async call(id: string, tool: string, args: any, caller: Caller, confirmed: boolean): Promise<{ ok: true; result: any } | { ok: false; code: string; reason: string }> {
+  async call(id: string, tool: string, args: any, caller: Caller, confirmed: boolean, signal?: AbortSignal): Promise<{ ok: true; result: any } | { ok: false; code: string; reason: string }> {
     const r = this.row(id);
     if (!r) return { ok: false, code: 'unknown', reason: 'unknown app node' };
     const node = { state: r.state, version: r.version, grantedVersion: r.granted_version, manifest: j<AppManifest>(r.manifest, null) } as any;
@@ -262,7 +262,7 @@ export class AppService {
     });
     let d = decide(node, id, tool, { confirmed, now: Date.now(), caller, locks }, this.limiter);
     if (!d.allowed && d.code === 'needs_confirm' && caller.kind !== 'user') {
-      const ok = await this.askConfirm(id, tool, args, caller);
+      const ok = await this.askConfirm(id, tool, args, caller, signal);
       if (ok) d = decide(node, id, tool, { confirmed: true, now: Date.now(), caller, locks }, this.limiter);
     }
     if (!d.allowed) {
@@ -282,32 +282,43 @@ export class AppService {
     }
   }
 
-  private askConfirm(id: string, tool: string, args: any, caller: Caller): Promise<boolean> {
+  /** Waits for the human (up to 120 s, below the 180 s tool-call timeout on hosts); expires early if the caller's request goes away. */
+  private askConfirm(id: string, tool: string, args: any, caller: Caller, signal?: AbortSignal): Promise<boolean> {
     const r = this.row(id)!;
     const aid = `app-confirm-${crypto.randomBytes(4).toString('hex')}`;
+    const CONFIRM_MS = 120_000;
     this.c.store.upsertApproval({
       id: aid, session_id: caller.kind === 'agent' ? caller.id : r.session_id, source: 'app-confirm', status: 'pending',
-      title: `${r.title}: ${tool}`, detail: `${caller.kind} ${caller.label || caller.id} wants to call ${tool} ${JSON.stringify(args)}`, data: { nodeId: id, tool, args },
+      title: `${r.title}: ${tool}`, detail: `${caller.kind} ${caller.label || caller.id} wants to call ${tool} ${JSON.stringify(args)}`, data: { nodeId: id, tool, args, expiresAt: Date.now() + CONFIRM_MS },
     });
     this.c.push.notify({ title: 'Confirm app action', body: `${r.title}: ${tool}`, tag: aid, url: `/?focus=${id}` });
     return new Promise((resolve) => {
-      const t = setTimeout(() => {
+      const finish = (ok: boolean, expire: boolean) => {
+        if (!this.confirmWaiters.has(aid)) return;
         this.confirmWaiters.delete(aid);
-        this.c.store.upsertApproval({ id: aid, status: 'expired' });
-        resolve(false);
-      }, 120_000);
-      this.confirmWaiters.set(aid, (ok) => {
         clearTimeout(t);
+        signal?.removeEventListener('abort', onAbort);
+        if (expire) this.c.store.upsertApproval({ id: aid, status: 'expired' });
         resolve(ok);
-      });
+      };
+      const t = setTimeout(() => finish(false, true), CONFIRM_MS);
+      const onAbort = () => finish(false, true);
+      this.confirmWaiters.set(aid, (ok) => finish(ok, false));
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
     });
+  }
+
+  /** a tool call is still waiting on this approval */
+  confirmWaiting(approvalId: string) {
+    return this.confirmWaiters.has(approvalId);
   }
 
   decideConfirm(approvalId: string, decision: 'allow' | 'deny') {
     const w = this.confirmWaiters.get(approvalId);
-    this.confirmWaiters.delete(approvalId);
+    if (!w) throw new Error('no longer waiting');
     this.c.store.upsertApproval({ id: approvalId, status: decision, decided_by: 'hub' });
-    w?.(decision === 'allow');
+    w(decision === 'allow');
   }
 
   async resource(id: string, uri: string) {
@@ -384,16 +395,17 @@ export class AppService {
   /** Pin a git commit, run the server from a worktree at that commit, and (optionally) grant actuate for this version. */
   async promote(id: string, o: { commit: string; grantActuate: boolean; commitDirty?: boolean; reviewHash?: string }) {
     let r = this.row(id)!;
+    if (!/^[0-9a-f]{7,40}$/.test(o.commit)) throw new Error('commit must be a git sha');
+    // promoting a preview version replaces the pinned node's version; the preview is removed only once every check passed
+    let preview: string | null = null;
     if (r.preview_of) {
-      // promoting a preview version replaces the pinned node's version
       const pinned = this.row(r.preview_of);
       if (pinned) {
-        this.unpublish(id);
+        preview = id;
         id = pinned.id;
         r = pinned;
       }
     }
-    if (!/^[0-9a-f]{7,40}$/.test(o.commit)) throw new Error('commit must be a git sha');
     const rev = await this.review(id);
     if (o.reviewHash && rev.reviewHash !== o.reviewHash) throw new Error('app files changed since you reviewed them; review again');
     let head = (await this.c.hosts.execOk(r.host_id, `git -C ${q(r.dir)} rev-parse HEAD`)).trim();
@@ -412,6 +424,7 @@ export class AppService {
       if (out.code !== 0) throw new Error(`commit failed: ${out.stderr.trim().slice(0, 300)}`);
       head = out.stdout.split('\u001e').pop()!.trim();
     }
+    if (preview) this.unpublish(preview);
     const root = await this.repoRoot(r.host_id, r.dir);
     const rel = r.dir.slice(root.length + 1);
     const pinDir = `$HOME/.agent-hub/pins/${id}-${head.slice(0, 12)}`;

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS approval (
   id TEXT PRIMARY KEY, session_id TEXT, source TEXT, title TEXT, detail TEXT, data TEXT,
   status TEXT, decided_by TEXT, created_at INTEGER, resolved_at INTEGER
 );
+CREATE INDEX IF NOT EXISTS approval_status ON approval(status);
 CREATE TABLE IF NOT EXISTS app_node (
   id TEXT PRIMARY KEY, app_id TEXT, session_id TEXT, host_id TEXT, dir TEXT, checkout_id TEXT,
   title TEXT, manifest TEXT, state TEXT, version INTEGER, pinned_commit TEXT, pinned_dir TEXT,

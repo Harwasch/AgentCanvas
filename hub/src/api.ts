@@ -1,6 +1,6 @@
 // HTTP routes: PWA API, hook intake (local + cloud), hub MCP tool endpoint.
 import type { Ctx } from './ctx.js';
-import { Router, HttpError, json } from './http.js';
+import { Router, HttpError, json, closeSignal, HELD } from './http.js';
 import { parseHook } from './claude/payloads.js';
 import { cspHeader } from './apps/manifest.js';
 import { AppError } from './apps/service.js';
@@ -33,6 +33,7 @@ export function routes(c: Ctx): Router {
   // ------------------------------------------------------------- state
   r.get('/api/state', 'hub', () => ({
     seq: c.bus.seq,
+    boot: c.bootId,
     hosts: c.cfg.hosts.map((h) => c.hosts.row(h.id)),
     accounts: c.cfg.accounts.map((a) => ({ id: a.id, label: a.label || a.id, color: a.color || '#8A8F98', cloud: { claudeEnvironments: a.cloud?.claudeEnvironments || [], codexEnvironments: a.cloud?.codexEnvironments || [] } })),
     checkouts: c.db.all('SELECT * FROM checkout ORDER BY host_id, path').map((x) => c.repos.row(x)),
@@ -106,6 +107,20 @@ export function routes(c: Ctx): Router {
     if (a.status !== 'pending') throw new HttpError(409, `approval already ${a.status}`);
     const d = req.body?.decision;
     if (!['allow', 'deny', 'allowSession'].includes(d)) throw new HttpError(400, 'decision must be allow|deny|allowSession');
+    // an approval whose waiter is gone (the tool call ended, the hub restarted, the connection dropped) would do nothing
+    const gone = (why: string): never => {
+      c.store.upsertApproval({ id: a.id, status: 'expired' });
+      throw new HttpError(409, `no longer waiting: ${why}`);
+    };
+    const s = c.store.session(a.session_id);
+    if (a.source === 'canvas-action' && !c.canvas.waiting(a.id)) gone('the tool call that asked has ended');
+    if (a.source === 'app-confirm' && !c.apps.confirmWaiting(a.id)) gone('the app call that asked has ended');
+    if (a.source === 'claude-hook' && !c.claude.holding(a.id)) gone('Claude stopped waiting for this answer');
+    if (a.source === 'codex' && !c.codex.canDecide(a)) gone('the Codex connection that asked was lost; the daemon re-sends it on reconnect');
+    if (a.source === 'claude-channel') {
+      if (!s || s.status === 'ended' || s.status === 'error') gone('the session has ended');
+      if (!c.claude.channelUp(a.session_id)) throw new HttpError(409, 'channel is not connected; answer in the native app or the terminal');
+    }
     if (a.source === 'codex') await c.codex.decide(a.id, d);
     else if (a.source === 'app-confirm') c.apps.decideConfirm(a.id, d === 'deny' ? 'deny' : 'allow');
     else if (a.source === 'canvas-action') c.canvas.decide(a.id, d === 'deny' ? 'deny' : 'allow');
@@ -240,8 +255,8 @@ export function routes(c: Ctx): Router {
       L(`hook ${p.hook.event} refused: ${why}`);
       return json(res, 403, { error: why });
     }
-    const held = c.claude.onHook(p.hook, res);
-    if (!held) return json(res, 200, {});
+    if (c.claude.onHook(p.hook, res) === HELD) return HELD;
+    return json(res, 200, {});
   });
   r.post('/hooks/cloud', 'cloudHook', (req, res) => {
     const p = parseHook(req.body);
@@ -251,7 +266,9 @@ export function routes(c: Ctx): Router {
   });
 
   // ------------------------------------------------------------- hub MCP tools (from hosts)
-  r.post('/api/mcp/tools/:tool', 'hook', async (req) => {
+  r.post('/api/mcp/tools/:tool', 'hook', async (req, res) => {
+    // a confirm-tier call waits for you; if hub_channel.py gives up (its 180 s timeout) the approval expires with it
+    const signal = closeSignal(res);
     const args = req.body?.arguments || {};
     const ctx = req.body?.context || {};
     const tool = req.params.tool;
@@ -278,7 +295,7 @@ export function routes(c: Ctx): Router {
     const assistant = s?.meta?.role === 'assistant';
     if (c.canvas.has(tool)) {
       const caller: CanvasCaller = { kind: assistant ? 'assistant' : 'agent', sessionId: s?.id ?? null, label: assistant ? 'Claude' : s ? `${s.vendor} · ${s.title}` : `agent on ${hostId}` };
-      return c.canvas.call(tool, args, caller);
+      return c.canvas.call(tool, args, caller, signal);
     }
     // the canvas assistant never drives hardware or apps directly: those go through the confirm-tier hub_* tools
     if (assistant && ['app_call', 'acquire_device', 'run_on_host', 'run_hil', 'request_compute'].includes(tool))
@@ -325,7 +342,7 @@ export function routes(c: Ctx): Router {
         }
         case 'app_call': {
           const n = c.apps.resolve(String(need(args.id, 'id')), s?.id);
-          const out = await c.apps.call(n.id, String(need(args.tool, 'tool')), args.arguments ?? {}, agent, false);
+          const out = await c.apps.call(n.id, String(need(args.tool, 'tool')), args.arguments ?? {}, agent, false, signal);
           if (!out.ok) return err(`blocked by hub (${out.code}): ${out.reason}`);
           return out.result;
         }
@@ -438,7 +455,7 @@ export function routes(c: Ctx): Router {
         const name = String(m.params?.name || '');
         if (!c.canvas.has(name)) return fail(-32602, `unknown tool ${name}`);
         const who = String(req.headers['x-hub-client'] || 'Claude (external)').slice(0, 40);
-        return reply(await c.canvas.call(name, m.params?.arguments || {}, { kind: 'external', sessionId: null, label: who }));
+        return reply(await c.canvas.call(name, m.params?.arguments || {}, { kind: 'external', sessionId: null, label: who }, closeSignal(res)));
       }
       default:
         return fail(-32601, `method not found: ${m.method}`);

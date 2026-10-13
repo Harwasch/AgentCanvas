@@ -25,6 +25,8 @@ interface Conn {
   up: boolean;
   backoff: number;
   subscribed: Set<string>; // thread ids
+  /** bumps on every (re)connect: a server request id is only answerable on the connection that sent it */
+  gen: number;
 }
 
 const textInput = (text: string) => [{ type: 'text', text, text_elements: [] }];
@@ -42,7 +44,7 @@ export class CodexDriver {
     const key = `${hostId}/${accountId}`;
     let cn = this.conns.get(key);
     if (!cn) {
-      cn = { key, hostId, accountId, up: false, backoff: 1000, subscribed: new Set() };
+      cn = { key, hostId, accountId, up: false, backoff: 1000, subscribed: new Set(), gen: 0 };
       this.conns.set(key, cn);
     }
     if (!cn.ready) cn.ready = this.open(cn).catch((e) => {
@@ -61,6 +63,7 @@ export class CodexDriver {
     L(`${cn.key}: daemon ${life?.status ?? 'unknown'} ${life?.socketPath ?? ''}`);
     const proc = this.c.hosts.spawn(cn.hostId, CodexAdapter.proxy(bin, home));
     cn.proc = proc;
+    cn.gen++;
     proc.stderr!.on('data', (d) => L(`${cn.key} proxy: ${String(d).trim()}`));
     const stream = Duplex.from({ readable: proc.stdout!, writable: proc.stdin! });
     const ws = new WebSocket('ws://localhost/', { createConnection: () => stream as any, perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
@@ -92,6 +95,9 @@ export class CodexDriver {
       proc.kill();
       const had = [...cn.subscribed];
       cn.subscribed.clear();
+      // requests parked on this connection can no longer be answered; the daemon re-sends them on reconnect (new rows)
+      for (const a of this.c.store.pendingApprovals())
+        if (a.source === 'codex' && a.data.connKey === cn.key) this.c.store.upsertApproval({ id: a.id, status: 'expired', decided_by: 'connection lost' });
       for (const s of this.c.store.sessions("vendor='codex' AND kind='local' AND host_id=? AND account_id=? AND status IN ('running','waiting')", cn.hostId, cn.accountId))
         this.c.store.upsertSession({ id: s.id, last_event: 'daemon connection lost' });
       if (had.length) {
@@ -213,18 +219,25 @@ export class CodexDriver {
     this.c.store.setStatus(id, 'ended', 'unsubscribed from hub');
   }
 
+  /** the connection that parked this request is still up (request ids are per connection) */
+  canDecide(a: { data: any }) {
+    const cn = this.conns.get(a.data?.connKey);
+    return !!(cn?.peer && cn.up && (a.data.gen === undefined || a.data.gen === cn.gen));
+  }
+
   async decide(approvalId: string, decision: 'allow' | 'deny' | 'allowSession') {
     const a = this.c.store.approval(approvalId);
     if (!a || a.status !== 'pending') return;
     const cn = this.conns.get(a.data.connKey);
-    if (!cn?.peer) throw new Error('codex connection is down; the approval will be re-sent on reconnect');
+    if (!cn?.peer || !this.canDecide(a)) throw new Error('no longer waiting: the Codex connection that asked was lost; the daemon re-sends it on reconnect');
     const d = decision === 'allow' ? 'accept' : decision === 'allowSession' ? 'acceptForSession' : 'decline';
     cn.peer.respond(a.data.requestId, { decision: d });
     this.c.store.upsertApproval({ id: approvalId, status: decision === 'deny' ? 'deny' : 'allow', decided_by: 'hub' });
   }
 
-  async recover() {
-    const keys = new Set(this.c.store.sessions("vendor='codex' AND kind='local' AND status NOT IN ('ended')").map((s) => `${s.host_id}\u0000${s.account_id}`));
+  /** (Re)connect to the daemons that have hub sessions: on hub start, and when a host comes back online. */
+  async recover(hostId?: string) {
+    const keys = new Set(this.c.store.sessions("vendor='codex' AND kind='local' AND status NOT IN ('ended')").filter((s) => !hostId || s.host_id === hostId).map((s) => `${s.host_id}\u0000${s.account_id}`));
     for (const k of keys) {
       const [h, a] = k.split('\u0000');
       this.conn(h, a).catch((e) => L(`recover ${h}/${a}: ${e.message}`));
@@ -247,7 +260,7 @@ export class CodexDriver {
         id: `cxa-${cn.key.replace(/\W/g, '')}-${id}-${p.itemId}`, session_id: s.id, source: 'codex', status: 'pending',
         title: isCmd ? `Run: ${p.command ?? '(command)'}` : 'Apply file changes',
         detail: isCmd ? [p.cwd && `cwd ${p.cwd}`, p.reason].filter(Boolean).join(' · ') : p.reason || '',
-        data: { connKey: cn.key, requestId: id, method, itemId: p.itemId, command: p.command },
+        data: { connKey: cn.key, gen: cn.gen, requestId: id, method, itemId: p.itemId, command: p.command },
       });
       this.c.store.setStatus(s.id, 'waiting', 'approval requested');
       this.c.push.notify({ title: 'Approval needed', body: `${s.title}: ${p.command ?? 'file changes'}`, tag: `cx-${id}`, url: `/?focus=${s.id}` });

@@ -52,6 +52,9 @@ export interface Approval {
 
 export const newId = (p = '') => p + crypto.randomBytes(6).toString('hex');
 
+/** Approval sources whose waiter lives only in hub memory (a pending tool call, a held hook response, a JSON-RPC request on one connection). */
+export const IN_MEMORY_SOURCES: ReadonlySet<Approval['source']> = new Set(['canvas-action', 'app-confirm', 'claude-hook', 'codex']);
+
 export class Store {
   constructor(public db: Db, public bus: EventBus) {}
 
@@ -115,6 +118,23 @@ export class Store {
   }
   pendingApprovals(): Approval[] {
     return this.db.all("SELECT * FROM approval WHERE status='pending' ORDER BY created_at").map((r) => ({ ...(r as any), data: j(r.data, {}) }));
+  }
+  /**
+   * On hub start: pending approvals whose waiter lived in the previous process can never be answered, so they are expired
+   * (Codex re-sends its requests on reconnect as new rows). Channel approvals go through the session's channel and stay,
+   * unless their session is gone. Returns the expired ids.
+   */
+  expireOrphanedApprovals(): string[] {
+    const out: string[] = [];
+    for (const a of this.pendingApprovals()) {
+      const s = this.session(a.session_id);
+      const sessionGone = !s || s.status === 'ended' || s.status === 'error';
+      if (IN_MEMORY_SOURCES.has(a.source) || (a.source === 'claude-channel' && sessionGone)) {
+        this.upsertApproval({ id: a.id, status: 'expired', decided_by: 'hub restart' });
+        out.push(a.id);
+      }
+    }
+    return out;
   }
   upsertApproval(a: Partial<Approval> & { id: string }): Approval {
     const prev = this.approval(a.id);

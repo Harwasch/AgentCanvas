@@ -17,6 +17,8 @@ export interface Req extends http.IncomingMessage {
 }
 export type Res = http.ServerResponse;
 export type Handler = (req: Req, res: Res) => Promise<any> | any;
+/** Returned by a handler that keeps the response open and answers it later (held hook responses). */
+export const HELD = Symbol('held');
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -56,6 +58,15 @@ export function json(res: Res, status: number, body: any, headers: Record<string
   const s = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(s);
+}
+
+/** Aborts when the client goes away before the response is sent (a waiting tool call whose caller gave up). */
+export function closeSignal(res: Res): AbortSignal {
+  const ac = new AbortController();
+  res.once('close', () => {
+    if (!res.writableFinished) ac.abort();
+  });
+  return ac.signal;
 }
 
 function readBody(req: http.IncomingMessage, limit = 8 * 1024 * 1024): Promise<Buffer> {
@@ -200,6 +211,7 @@ export function createServer(d: ServerDeps) {
           } else throw new HttpError(415, 'body must be application/json');
         }
         const out = await r.h(req, res);
+        if (out === HELD) return;
         if (!res.headersSent && out !== undefined) json(res, 200, out);
         else if (!res.headersSent) json(res, 200, { ok: true });
         return;

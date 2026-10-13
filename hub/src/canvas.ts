@@ -63,7 +63,8 @@ const ok = (t: string, structured?: any): Result => ({ content: [text(t)], ...(s
 const fail = (t: string): Result => ({ isError: true, content: [text(t)] });
 const REMOVABLE = new Set(['note', 'file', 'todos']);
 const MERGE_MS = 8000;
-const CONFIRM_MS = 10 * 60_000;
+/** below the 180 s tool-call timeouts of hub_channel.py and Codex's tool_timeout_sec, so a late Allow never runs an abandoned call */
+export const CONFIRM_MS = 150_000;
 
 export class CanvasService {
   private views = new Map<string, ViewReport>();
@@ -175,35 +176,54 @@ export class CanvasService {
   }
 
   // ------------------------------------------------------------ confirm tier
-  /** Ask the user in the hub; resolves true/false (false after 10 min). */
-  private confirm(caller: CanvasCaller, title: string, detail: string, tool: string, args: any): Promise<boolean> {
+  /**
+   * Ask the user in the hub; resolves true/false. The approval expires (false) after CONFIRM_MS, which stays below
+   * the callers' own tool-call timeouts, or as soon as the waiting HTTP request goes away (`signal`), so an Allow can
+   * never run an action the agent was already told had failed.
+   */
+  private confirm(caller: CanvasCaller, title: string, detail: string, tool: string, args: any, signal?: AbortSignal): Promise<boolean> {
     const id = newId('ca-');
-    this.c.store.upsertApproval({ id, session_id: caller.sessionId ?? 'mcp:external', source: 'canvas-action', status: 'pending', title, detail, data: { tool, args, by: caller.label } });
+    const expiresAt = Date.now() + CONFIRM_MS;
+    this.c.store.upsertApproval({ id, session_id: caller.sessionId ?? 'mcp:external', source: 'canvas-action', status: 'pending', title, detail, data: { tool, args, by: caller.label, expiresAt } });
     this.c.push.notify({ title: 'Claude asks', body: title, tag: id, url: caller.sessionId ? `/?focus=${caller.sessionId}` : '/' });
     return new Promise((resolve) => {
-      const t = setTimeout(() => {
+      const finish = (v: boolean, expire: boolean) => {
         if (!this.waiters.has(id)) return;
         this.waiters.delete(id);
-        this.c.store.upsertApproval({ id, status: 'expired' });
-        resolve(false);
-      }, CONFIRM_MS);
-      this.waiters.set(id, (v) => { clearTimeout(t); resolve(v); });
+        clearTimeout(t);
+        signal?.removeEventListener('abort', onAbort);
+        if (expire) this.c.store.upsertApproval({ id, status: 'expired' });
+        resolve(v);
+      };
+      const t = setTimeout(() => finish(false, true), CONFIRM_MS);
+      const onAbort = () => {
+        L(`${id}: caller went away; approval expired`);
+        finish(false, true);
+      };
+      this.waiters.set(id, (v) => finish(v, false));
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
     });
+  }
+  /** a tool call is still waiting on this approval */
+  waiting(approvalId: string) {
+    return this.waiters.has(approvalId);
   }
   decide(approvalId: string, decision: 'allow' | 'deny') {
     const w = this.waiters.get(approvalId);
-    this.waiters.delete(approvalId);
+    if (!w) throw new Error('no longer waiting');
     this.c.store.upsertApproval({ id: approvalId, status: decision, decided_by: 'hub' });
-    w?.(decision === 'allow');
+    w(decision === 'allow');
   }
 
   // ------------------------------------------------------------ tool calls
-  async call(tool: string, args: any, caller: CanvasCaller): Promise<Result> {
+  /** `signal` aborts when the HTTP request that waits for the result goes away (confirm-tier approvals then expire). */
+  async call(tool: string, args: any, caller: CanvasCaller, signal?: AbortSignal): Promise<Result> {
     const def = BY_NAME.get(tool);
     if (!def) return fail(`unknown canvas tool ${tool}`);
     args = args || {};
     try {
-      const r = await this.run(tool, args, caller);
+      const r = await this.run(tool, args, caller, signal);
       if (tool !== 'canvas_snapshot' && tool !== 'hub_overview')
         this.audit(tool, `${caller.kind}:${caller.sessionId ?? caller.label}`, args, !r.isError, r.isError ? String(r.content?.[0]?.text || '').slice(0, 300) : '');
       return r;
@@ -212,7 +232,7 @@ export class CanvasService {
     }
   }
 
-  private async run(tool: string, a: any, caller: CanvasCaller): Promise<Result> {
+  private async run(tool: string, a: any, caller: CanvasCaller, signal?: AbortSignal): Promise<Result> {
     const v = this.view();
     switch (tool) {
       case 'canvas_snapshot': {
@@ -356,7 +376,7 @@ export class CanvasService {
         const vendor = String(a.vendor || '');
         const host = a.where === 'cloud' ? 'cloud' : String(a.host || '');
         const account = String(a.account || this.c.cfg.accounts[0]?.id || '');
-        const okd = await this.confirm(caller, `Start a ${vendor} session ${a.where === 'cloud' ? 'in the cloud' : `on ${host}`}`, String(a.prompt || ''), tool, a);
+        const okd = await this.confirm(caller, `Start a ${vendor} session ${a.where === 'cloud' ? 'in the cloud' : `on ${host}`}`, String(a.prompt || ''), tool, a, signal);
         if (!okd) return fail('the user declined (or did not answer) starting this session');
         const s = await spawnSession(this.c, { vendor, accountId: account, where: a.where === 'cloud' ? 'cloud' : host, hostId: host, checkoutId: a.checkout_id, branchId: a.branch_id, cwd: a.cwd, prompt: a.prompt, environment: a.environment });
         return ok(`started ${s.vendor} session ${s.id} (${s.title})`, { sessionId: s.id });
@@ -365,7 +385,7 @@ export class CanvasService {
         const s = this.c.store.session(String(a.session || ''));
         if (!s) return fail(`unknown session ${a.session}`);
         if (s.id === caller.sessionId) return fail('that is your own session');
-        if (!(await this.confirm(caller, `Message ${s.title}`, String(a.text || ''), tool, a))) return fail('the user declined sending this message');
+        if (!(await this.confirm(caller, `Message ${s.title}`, String(a.text || ''), tool, a, signal))) return fail('the user declined sending this message');
         await sendToSession(this.c, s, String(a.text));
         return ok(`sent to ${s.id}`);
       }
@@ -373,7 +393,7 @@ export class CanvasService {
         const plan = this.c.hil.plans().find((p) => p.id === a.plan || p.id.endsWith(`:${a.plan}`));
         if (!plan) return fail(`unknown HIL plan ${a.plan}; plans: ${this.c.hil.plans().map((p) => p.id).join(', ') || 'none'}`);
         const only = Array.isArray(a.only) && a.only.length ? a.only.map(String) : null;
-        if (!(await this.confirm(caller, `Run HIL plan ${plan.title}${only ? ` (${only.join(', ')})` : ''}`, `${plan.hostId} · takes the plan's device locks`, tool, a))) return fail('the user declined the HIL run');
+        if (!(await this.confirm(caller, `Run HIL plan ${plan.title}${only ? ` (${only.join(', ')})` : ''}`, `${plan.hostId} · takes the plan's device locks`, tool, a, signal))) return fail('the user declined the HIL run');
         const run = await this.c.hil.start(plan.id, caller.sessionId ?? 'you', only);
         return ok(`HIL run ${run.id} started on ${plan.hostId}${caller.sessionId ? '; results will arrive as a message in this session' : ''}`, { runId: run.id });
       }
@@ -384,14 +404,14 @@ export class CanvasService {
         if (!checkoutId) return fail('this project has no checkout on any host');
         const base = String(a.base || p.defaultBranch || 'main');
         if (!validRef(String(a.name ?? '')) || !validRef(base)) return fail('invalid branch or base name (letters, digits, . _ - / only)');
-        if (!(await this.confirm(caller, `Create branch ${a.name} from ${base}`, `${p.name} · ${a.push ? 'pushed to GitHub' : 'local worktree'}${a.goal ? ` · ${a.goal}` : ''}`, tool, a))) return fail('the user declined creating the branch');
+        if (!(await this.confirm(caller, `Create branch ${a.name} from ${base}`, `${p.name} · ${a.push ? 'pushed to GitHub' : 'local worktree'}${a.goal ? ` · ${a.goal}` : ''}`, tool, a, signal))) return fail('the user declined creating the branch');
         const br = await this.c.projects.createBranch({ projectId: p.id, checkoutId, base, name: String(a.name), goal: a.goal, push: !!a.push, createdBy: 'agent' });
         return ok(`branch ${br.name} created`, { branchId: br.id });
       }
       case 'hub_open_terminal': {
         const host = String(a.host || '');
         if (!this.c.cfg.hosts.some((h) => h.id === host)) return fail(`unknown host ${host}`);
-        if (!(await this.confirm(caller, `Open a terminal on ${host}`, a.cwd ? `in ${a.cwd}` : 'home directory', tool, a))) return fail('the user declined opening a terminal');
+        if (!(await this.confirm(caller, `Open a terminal on ${host}`, a.cwd ? `in ${a.cwd}` : 'home directory', tool, a, signal))) return fail('the user declined opening a terminal');
         const n = await this.c.nodes.create('terminal', host, { hostId: host, cwd: a.cwd });
         return ok(`terminal node ${n.id} opened on ${host}`, { nodeId: n.id });
       }

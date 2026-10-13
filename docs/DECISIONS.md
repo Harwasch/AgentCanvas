@@ -39,3 +39,4 @@ Precedence: the build prompt > `architecture.md` (behavior) > `AgentCanvas.html`
 - **Account usage meters:** the design's subscription-usage meters show live session counts per account instead. The hub has no real usage source (`/usage` scraping is out of scope).
 - **Branch:** work is pushed to `claude/hub-v1` as the prompt asks, not to the session's default branch.
 - **Test hosts:** users `hosta` (mini-1) and `hostb` (mini-2) on localhost stand in for the two mini PCs. Stub CLIs live in `/opt/agent-hub-stubs` and are selected purely by `adapters.*.bin` in the config.
+- **Self-signed TLS and the PWA:** browsers refuse to register a service worker (and so push) on an untrusted certificate. With `tls: {cert, key}` the device has to trust the CA. `tailscale serve` avoids this, and the smoke test runs Chromium with `--ignore-certificate-errors`.

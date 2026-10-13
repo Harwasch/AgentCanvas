@@ -104,7 +104,8 @@ ecdh.generateKeys();
 await api('POST', '/api/push/subscribe', { subscription: { endpoint: 'https://localhost:8444/push/smoke', keys: { p256dh: ecdh.getPublicKey('base64url'), auth: crypto.randomBytes(16).toString('base64url') } } });
 
 // ------------------------------------------------------------------ browser
-const browser = await chromium.launch({ executablePath: CFG.screenshot.chromiumPath || undefined, args: ['--no-sandbox'] });
+// a self-signed cert blocks service-worker registration unless the browser trusts it (production: tailscale serve)
+const browser = await chromium.launch({ executablePath: CFG.screenshot.chromiumPath || undefined, args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 900 } });
 const page = await ctx.newPage();
 const consoleErrors = [];

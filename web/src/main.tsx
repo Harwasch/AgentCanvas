@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import App from './App';
-import { setMockHandler } from './api';
+import { setMockHandler, setMockRaw, setMockTerminal } from './api';
 import { startLive, startMock } from './store';
 import './styles.css';
 
@@ -11,6 +11,8 @@ async function boot() {
   if (mock) {
     const m = await import('./mock');
     setMockHandler(m.handle);
+    setMockTerminal(m.mockTerminal);
+    setMockRaw(m.mockRaw);
     startMock(m.subscribe, m.snapshot());
   } else {
     void startLive();

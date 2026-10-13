@@ -2,6 +2,7 @@
 // event stream. Loaded via dynamic import so it is split out of the main bundle.
 import winchHtml from '../../apps/winch-console/ui.html?raw';
 import type { ApiResponse } from './api';
+import { HEX, WPT, handleV2, makeTermSocket, mockRawUrl, startV2Ticks, v2Fixtures, type V2Ctx, type V2State } from './mockv2';
 import type {
   Account, AppNode, Approval, Audit, Checkout, Host, HubEvent, Message, Session, StateSnapshot,
 } from './types';
@@ -21,7 +22,7 @@ const accounts: Account[] = [
 
 const checkouts: Checkout[] = [
   {
-    id: 'co_hexapod_m1', host_id: 'mini-1', path: '~/code/hexapod-robot', repo_id: 'gh:me/hexapod-robot', repoName: 'hexapod-robot',
+    id: 'co_hexapod_m1', host_id: 'mini-1', path: '~/code/hexapod-robot', repo_id: HEX, repoName: 'hexapod-robot',
     remote_url: 'git@github.com:me/hexapod-robot.git', branch: 'feat/winch-console', head: '3f9c2e1a7b4d90c2e8f1', head_subject: 'winch: speed trace + unconfirmed STOP',
     head_time: iso(14 * 60e3), upstream: 'origin/feat/winch-console', ahead: 2, behind: 0, dirty: 1,
     changes: [{ path: 'apps/winch-console/ui.html', xy: ' M' }],
@@ -32,7 +33,7 @@ const checkouts: Checkout[] = [
     updated_at: iso(30e3),
   },
   {
-    id: 'co_wpt_m2', host_id: 'mini-2', path: '~/code/wpt-charger', repo_id: 'gh:work/wpt-charger', repoName: 'wpt-charger',
+    id: 'co_wpt_m2', host_id: 'mini-2', path: '~/code/wpt-charger', repo_id: WPT, repoName: 'wpt-charger',
     remote_url: 'git@github.com:work/wpt-charger.git', branch: 'main', head: '9a01bc4e55d2', head_subject: 'coil: tighten FEA mesh near ferrite edge',
     head_time: iso(3 * 3600e3), upstream: 'origin/main', ahead: 0, behind: 1, dirty: 0, changes: [], apps: [], updated_at: iso(60e3),
   },
@@ -63,7 +64,7 @@ const sessions: Session[] = [
   },
   {
     id: 's_cx_cloud', vendor: 'codex', kind: 'cloud', host_id: null, account_id: 'personal', checkout_id: 'co_hexapod_m1', cwd: '',
-    branch: 'feat/winch-console', native_id: 'task_e_68f0a1c2b3d4e5f6', native_url: 'https://chatgpt.com/codex/tasks/task_e_68f0a1c2b3d4e5f6',
+    branch: 'codex/can-tests', native_id: 'task_e_68f0a1c2b3d4e5f6', native_url: 'https://chatgpt.com/codex/tasks/task_e_68f0a1c2b3d4e5f6',
     title: 'CAN protocol test suite', status: 'pending', last_event: 'cloud.poll', model: 'gpt-5-codex', effort: null, created_at: iso(6 * 60e3), updated_at: iso(60e3),
     meta: { cloudStatus: 'pending', environment: 'env_hexapod', attempts: 2 },
   },
@@ -180,11 +181,12 @@ const FILES: Record<string, Record<string, string>> = {
 };
 
 // ---------------- runtime ----------------
-const state: StateSnapshot & { messages: Record<string, Message[]>; audit: Audit[] } = {
+const state: StateSnapshot & V2State & { messages: Record<string, Message[]>; audit: Audit[] } = {
   seq: 100,
   hosts, accounts, checkouts, sessions, approvals, nodes: makeNodes(), layout: {},
   config: { publicUrl: location.origin, vapidPublicKey: '' },
   messages, audit: [],
+  ...v2Fixtures(checkouts),
 };
 
 const listeners: ((e: HubEvent) => void)[] = [];
@@ -297,6 +299,35 @@ function dirtyOf(node: AppNode): string[] {
   return (co?.changes || []).map((c) => c.path).filter((p) => p.startsWith(node.dir + '/'));
 }
 
+function createSession(body: any): Session {
+  const cloud = body.where === 'cloud';
+  const co = state.checkouts.find((c) => c.id === body.checkoutId);
+  const id = `s_new_${++sessN}`;
+  const s: Session = {
+    id, vendor: body.vendor, kind: cloud ? 'cloud' : 'local', host_id: cloud ? null : body.hostId || co?.host_id || null, account_id: body.accountId,
+    checkout_id: body.checkoutId || null, cwd: body.cwd || co?.path || '', branch: body.branch || co?.branch || '', native_id: null, native_url: null,
+    title: (body.prompt || 'New session').split(/\s+/).slice(0, 6).join(' '), status: cloud ? 'pending' : 'starting', last_event: null,
+    model: body.vendor === 'claude' ? 'opus' : 'gpt-5-codex', effort: body.vendor === 'claude' ? 'high' : 'medium',
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    meta: cloud ? { cloudStatus: 'pending', environment: body.environment, attempts: body.attempts } : {},
+  };
+  state.sessions.push(s);
+  emit('session.upsert', s);
+  addMsg(id, 'user', 'text', body.prompt || '');
+  setTimeout(() => {
+    const nid = body.vendor === 'claude' ? 'session_01' + Math.random().toString(36).slice(2, 12) : 'task_e_' + Math.random().toString(16).slice(2, 14);
+    const nurl = cloud ? (body.vendor === 'claude' ? `https://claude.ai/code/${nid}` : `https://chatgpt.com/codex/tasks/${nid}`) : null;
+    updSession(id, { status: 'running', native_id: nid, native_url: nurl, meta: { ...s.meta, cloudStatus: cloud ? 'running' : undefined } });
+    streamReply(id, 'Looking at the repository layout first, then I will start on the change.');
+  }, 1200);
+  return s;
+}
+
+const v2ctx: V2Ctx = { state, emit, createSession, addMsg, updSession: (id, patch) => { updSession(id, patch); }, streamReply };
+startV2Ticks(v2ctx);
+export const mockTerminal = makeTermSocket;
+export const mockRaw = mockRawUrl;
+
 let sessN = 0;
 export async function handle(method: string, path: string, body?: any): Promise<ApiResponse> {
   await delay(60);
@@ -306,29 +337,7 @@ export async function handle(method: string, path: string, body?: any): Promise<
 
   if (method === 'GET' && p === '/api/state') return ok(snapshot());
 
-  if (method === 'POST' && p === '/api/sessions') {
-    const cloud = body.where === 'cloud';
-    const co = state.checkouts.find((c) => c.id === body.checkoutId);
-    const id = `s_new_${++sessN}`;
-    const s: Session = {
-      id, vendor: body.vendor, kind: cloud ? 'cloud' : 'local', host_id: cloud ? null : body.hostId, account_id: body.accountId,
-      checkout_id: body.checkoutId || null, cwd: body.cwd || co?.path || '', branch: body.branch || co?.branch || '', native_id: null, native_url: null,
-      title: (body.prompt || 'New session').split(/\s+/).slice(0, 6).join(' '), status: cloud ? 'pending' : 'starting', last_event: null,
-      model: body.vendor === 'claude' ? 'opus' : 'gpt-5-codex', effort: body.vendor === 'claude' ? 'high' : 'medium',
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      meta: cloud ? { cloudStatus: 'pending', environment: body.environment, attempts: body.attempts } : {},
-    };
-    state.sessions.push(s);
-    emit('session.upsert', s);
-    addMsg(id, 'user', 'text', body.prompt || '');
-    setTimeout(() => {
-      const nid = body.vendor === 'claude' ? 'session_01' + Math.random().toString(36).slice(2, 12) : 'task_e_' + Math.random().toString(16).slice(2, 14);
-      const nurl = cloud ? (body.vendor === 'claude' ? `https://claude.ai/code/${nid}` : `https://chatgpt.com/codex/tasks/${nid}`) : null;
-      updSession(id, { status: 'running', native_id: nid, native_url: nurl, meta: { ...s.meta, cloudStatus: cloud ? 'running' : undefined } });
-      streamReply(id, 'Looking at the repository layout first, then I will start on the change.');
-    }, 1200);
-    return ok(s);
-  }
+  if (method === 'POST' && p === '/api/sessions') return ok(createSession(body));
 
   if ((m = p.match(/^\/api\/sessions\/([^/]+)\/(messages|send|interrupt|settings|stop|refresh)$/))) {
     const [, sid, act] = m;
@@ -455,6 +464,8 @@ export async function handle(method: string, path: string, body?: any): Promise<
     emit('layout.upsert', body);
     return ok();
   }
+  const v2 = handleV2(method, p, url, body, v2ctx);
+  if (v2) return v2;
   if (p === '/api/push/vapid') return ok({ publicKey: '' });
   if (p.startsWith('/api/push/')) return ok();
   return err(404, { error: `mock: no route ${method} ${p}` });

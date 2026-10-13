@@ -31,7 +31,7 @@ export class TerminalService {
     if (!agentPane) await this.c.hosts.execOk(hostId, `tmux new-session -d -s ${q(tmux)} -x 120 -y 32 -c ${rpath(cwd)}`);
     this.audit(id, '(terminal open)', { host: hostId, cwd, mode: agentPane ? 'agent' : 'shell', session: s?.id ?? null });
     L(`opened ${id} on ${hostId} (${agentPane ? `agent pane ${tmux}` : cwd})`);
-    return this.c.nodes.putTerminal(id, o.parentId ?? s?.id ?? `machine:${hostId}`, { hostId, cwd, mode: agentPane ? 'agent' : 'shell', sessionId: s?.id ?? null, status: 'open', tmux });
+    return this.c.nodes.putTerminal(id, o.parentId ?? s?.id ?? hostId, { hostId, cwd, mode: agentPane ? 'agent' : 'shell', sessionId: s?.id ?? null, status: 'open', tmux });
   }
 
   async close(id: string) {

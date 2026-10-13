@@ -148,6 +148,160 @@ export interface StateSnapshot {
   nodes: AppNode[];
   layout: Record<string, LayoutEntry>;
   config: { publicUrl?: string; vapidPublicKey?: string };
+  // v2
+  projects?: Project[];
+  branches?: Branch[];
+  machines?: Machine[];
+  devices?: Device[];
+  cnodes?: CNode[];
+  todos?: Todo[];
+  grants?: Grant[];
+  hil?: { plans: HilPlan[]; runs: HilRun[] };
+}
+
+// ---------------- v2 ----------------
+export type Ts = string | number;
+
+export interface Project {
+  id: string;
+  name: string;
+  remoteUrl: string;
+  gh: { owner: string; repo: string; account: string; url: string } | null;
+  defaultBranch: string;
+  readme: string;
+  stats: { files: number; commits: number; sizeMB: number; branches: number; sessions: number };
+  folders: { name: string; mb: number }[];
+  checkouts: string[];
+  updatedAt: Ts;
+}
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  state: 'open' | 'draft' | 'merged' | 'closed';
+  url: string;
+  reviews: { approved: number; changesRequested: number; commented: number };
+}
+export interface CiStatus { state: 'success' | 'failure' | 'pending' | 'none'; total: number; passed: number; failed: number; url: string | null }
+export interface Branch {
+  id: string;
+  projectId: string;
+  name: string;
+  base: string | null;
+  goal: string | null;
+  createdBy: 'hub' | 'agent' | 'other';
+  checkouts: string[];
+  head: string | null;
+  pushed: boolean;
+  remoteSha: string | null;
+  aheadRemote: number;
+  behindRemote: number;
+  aheadBase: number;
+  behindBase: number;
+  pr: PullRequest | null;
+  ci: CiStatus | null;
+  commits: { sha: string; subject: string; author: string; at: Ts }[];
+  apps: { path: string; id: string; title: string }[];
+  cloud: { sessionId?: string } | null;
+  updatedAt: Ts;
+}
+
+export interface Machine {
+  id: string;
+  label: string;
+  kind: 'host' | 'cloud';
+  color: string;
+  status: 'online' | 'offline' | 'managed';
+  cpu: { pct: number; cores: number } | null;
+  mem: { usedMB: number; totalMB: number } | null;
+  gpu: { name: string; utilPct: number; memUsedMB: number; memTotalMB: number }[];
+  load: number | null;
+  updatedAt: Ts;
+}
+
+export type DeviceIcon = 'SWD' | 'CAN' | 'USB' | 'SER' | 'LAN' | 'DUT' | 'BUS' | 'SSH';
+export interface Device {
+  id: string;
+  hostId: string;
+  parentId: string | null;
+  title: string;
+  kind: string;
+  icon: DeviceIcon;
+  port: string;
+  fw: string;
+  status: 'connected' | 'missing' | 'reachable' | 'busy' | 'unknown';
+  source: 'declared' | 'discovered';
+  lock: { sessionId: string; since: Ts } | null;
+  updatedAt: Ts;
+}
+
+export interface Grant {
+  id: string;
+  sessionId: string;
+  hostId: string;
+  resources: string;
+  purpose: string;
+  quotaGB: number | null;
+  usedGB: number | null;
+  status: 'requested' | 'active' | 'revoked';
+  createdAt: Ts;
+}
+
+export interface HilPlan { id: string; title: string; hostId: string; devices: string[]; plan: string | null; setup: string[] }
+export interface HilRow { id: string; req: string; name: string; status: 'pending' | 'run' | 'pass' | 'fail' | 'skip'; durMs: number | null }
+export interface HilRun {
+  id: string;
+  planId: string;
+  status: 'running' | 'passed' | 'failed' | 'aborted';
+  pass: number;
+  fail: number;
+  left: number;
+  rows: HilRow[];
+  log: string[];
+  startedBy: string;
+  startedAt: Ts;
+  finishedAt: Ts | null;
+}
+
+export interface Todo {
+  id: string;
+  scope: string | null;
+  text: string;
+  src: string;
+  done: boolean;
+  dispatchedSessionId: string | null;
+  createdAt: Ts;
+}
+
+export type FileSource = { kind: 'checkout'; checkoutId: string } | { kind: 'github'; projectId: string; ref: string };
+export type FileKind = 'doc' | 'image' | 'code' | 'model3d' | 'pdf' | 'text' | 'binary';
+
+export interface NoteData { title?: string; text?: string }
+export interface TodosData { title?: string; scope?: string | null }
+export interface HTodoData { todoId: string }
+export interface SuggestData {
+  title: string; prompt: string; rationale: string; vendor: Vendor; hostId: string | null; accountId: string;
+  branchId: string | null; status: 'open' | 'launched' | 'dismissed'; sessionId?: string;
+}
+export interface ReviewComment { id: string; author: 'you' | 'agent'; text: string; at: Ts }
+export interface ReviewData {
+  sessionId: string; title: string; path: string; source: FileSource; sha: string; kind: string; note: string; promoteTo: string | null;
+  checklist: { text: string; done: boolean }[]; comments: ReviewComment[]; status: 'pending' | 'approved' | 'changes';
+}
+export interface FileData {
+  source: FileSource; path: string; sha: string; blob?: string; kind: FileKind; newer: { sha: string; subject: string; at: Ts } | null;
+}
+export interface TerminalData { hostId: string; cwd: string; mode: 'shell' | 'agent'; sessionId: string | null; status: 'open' | 'closed' }
+
+export type CNodeType = 'note' | 'todos' | 'htodo' | 'suggest' | 'review' | 'file' | 'terminal';
+export interface CNode<D = any> {
+  id: string;
+  type: CNodeType;
+  parentId: string | null;
+  data: D;
+  createdBy: string;
+  createdAt: Ts;
+  updatedAt: Ts;
 }
 
 export interface HubEvent { seq: number; type: string; data: any; ts?: number | string }

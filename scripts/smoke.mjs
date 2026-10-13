@@ -336,6 +336,201 @@ try {
     return `pinned ${n.pinnedCommit.slice(0, 8)}, set_speed allowed after confirm (${ok.reason}), stop unconfirmed`;
   });
 
+
+  // =============================================================== v2: GitHub, files, all node types
+  const P1 = 'github.com/agent-hub-test/hexapod-robot';
+  const focus = async (id) => {
+    await page.goto(`${BASE}/?focus=${encodeURIComponent(id)}`);
+    await page.waitForTimeout(700);
+  };
+  const H = (id) => page.locator(`[data-testid="${id}"]`);
+
+  await check('project + branch nodes with GitHub PR and CI (gh)', async () => {
+    const br = await until(async () => (await state()).branches.find((b) => b.id === `${P1}#feat/winch-console` && b.pr && b.ci), 'branch with PR+CI', 30000);
+    await focus(br.id);
+    const node = page.locator(`[data-testid="branch-node"][data-branch-id="${br.id}"]`);
+    await node.waitFor({ timeout: 10000 });
+    const pr = await node.locator('[data-testid="branch-pr"]').innerText();
+    const ci = await node.locator('[data-testid="branch-ci"]').innerText();
+    if (!pr.includes('18')) throw new Error(`PR chip "${pr}"`);
+    if (!/pending|running|2\s*\/\s*3/i.test(ci)) throw new Error(`CI chip "${ci}"`);
+    await page.locator(`[data-testid="project-node"][data-project-id="${P1}"]`).waitFor({ timeout: 5000 });
+    await page.screenshot({ path: path.join(SHOTS, 'v2-project-branch.png') });
+    return `PR #${br.pr.number} ${br.pr.state} (${br.pr.reviews.approved} approved), CI ${br.ci.state} ${br.ci.passed}/${br.ci.total}`;
+  });
+
+  await check('new branch from the canvas → worktree on mini-1, pushed, branch node appears', async () => {
+    await focus(P1);
+    await page.locator(`[data-testid="project-node"][data-project-id="${P1}"] [data-testid="new-branch"]`).first().click();
+    await H('branch-name').fill('feat/smoke-branch');
+    await H('branch-goal').fill('Branch created by the smoke test');
+    await H('branch-push').check();
+    await H('branch-submit').click();
+    const b = await until(async () => (await state()).branches.find((x) => x.id === `${P1}#feat/smoke-branch` && x.checkouts.length && x.pushed), 'branch with worktree + pushed', 60000);
+    await page.locator(`[data-testid="branch-node"][data-branch-id="${b.id}"]`).waitFor({ timeout: 15000 });
+    return `${b.checkouts[0]} · pushed`;
+  });
+
+  let imgNode, docNode;
+  await check('any file as a node: quick open → image and markdown nodes render', async () => {
+    await page.goto(`${BASE}/`);
+    await T('add-button').click().catch(() => {});
+    await H('add-file').click();
+    await H('quick-open').waitFor({ timeout: 10000 });
+    const opts = await H('qo-source').locator('option').allTextContents();
+    const ix = opts.findIndex((o) => /hexapod/.test(o) && /mini-1/.test(o) && !/worktrees/.test(o));
+    if (ix >= 0) await H('qo-source').selectOption({ index: ix });
+    await H('qo-input').fill('gait_sweep');
+    await page.locator('[data-testid="qo-item"][data-path="AI/sim/gait/gait_sweep.png"]').waitFor({ timeout: 10000 });
+    await H('qo-input').press('Enter');
+    imgNode = await until(async () => (await state()).cnodes.find((n) => n.type === 'file' && n.data.path === 'AI/sim/gait/gait_sweep.png'), 'image file node', 15000);
+    await focus(imgNode.id);
+    const img = page.locator(`[data-testid="file-node"][data-node-id="${imgNode.id}"] img`).first();
+    await img.waitFor({ timeout: 10000 });
+    await until(() => img.evaluate((e) => e.complete && e.naturalWidth > 0), 'image decoded', 10000);
+    // markdown from GitHub (main) through the API
+    docNode = await api('POST', '/api/cnodes', { type: 'file', data: { source: { kind: 'github', projectId: P1, ref: 'main' }, path: 'SYS/vv/actuator_test_plan.md' } });
+    await focus(docNode.id);
+    await page.locator(`[data-testid="file-node"][data-node-id="${docNode.id}"]`).getByText('Actuator V&V test plan').first().waitFor({ timeout: 10000 });
+    await page.screenshot({ path: path.join(SHOTS, 'v2-file-nodes.png') });
+    return `${imgNode.data.kind} @ ${String(imgNode.data.sha).slice(0, 8)}, doc from GitHub @ ${String(docNode.data.sha).slice(0, 8)}`;
+  });
+
+  await check('pinned file shows "Newer version" after a commit; Get latest re-pins', async () => {
+    const fnode = await api('POST', '/api/cnodes', { type: 'file', data: { source: { kind: 'checkout', checkoutId: co1 }, path: 'docs/architecture.md' } });
+    execFileSync('ssh', ['-i', CFG.ssh.identityFile, '-o', 'BatchMode=yes', 'hosta@localhost', 'cd code/hexapod-robot && echo "Updated by the smoke test." >> docs/architecture.md && git commit -qam "docs: architecture note" && git rev-parse HEAD']);
+    await api('POST', `/api/checkouts/${encodeURIComponent(co1)}/refresh`);
+    await focus(fnode.id);
+    const n = page.locator(`[data-testid="file-node"][data-node-id="${fnode.id}"]`);
+    await n.locator('[data-testid="file-newer"]').waitFor({ timeout: 40000 });
+    await n.locator('[data-testid="file-latest"]').click();
+    await until(async () => (await state()).cnodes.find((x) => x.id === fnode.id && !x.data.newer && x.data.sha !== fnode.data.sha), 're-pinned', 15000);
+    return `${String(fnode.data.sha).slice(0, 8)} → newer commit detected → re-pinned`;
+  });
+
+  await check('note and to-do list nodes (create, edit, toggle, dispatch to an agent)', async () => {
+    await page.goto(`${BASE}/`);
+    await T('add-button').click().catch(() => {});
+    await H('add-note').click();
+    const note = await until(async () => (await state()).cnodes.find((n) => n.type === 'note'), 'note node', 10000);
+    await focus(note.id);
+    await page.locator('[data-testid="note-node"] [data-testid="note-text"]').first().fill('Fab quote due Friday.');
+    await until(async () => (await state()).cnodes.find((n) => n.id === note.id && n.data.text === 'Fab quote due Friday.'), 'note saved', 10000);
+    await T('add-button').click().catch(() => {});
+    await H('add-todos').click();
+    const list = await until(async () => (await state()).cnodes.find((n) => n.type === 'todos'), 'to-do list', 10000);
+    await focus(list.id);
+    const ln = page.locator('[data-testid="todos-node"]').first();
+    await ln.locator('[data-testid="todo-input"]').fill('Order PCAN cable');
+    await ln.locator('[data-testid="todo-add"]').click();
+    const t = await until(async () => (await state()).todos.find((x) => x.text === 'Order PCAN cable'), 'to-do saved', 10000);
+    await ln.locator(`[data-testid="todo-item"][data-todo-id="${t.id}"] [data-testid="todo-toggle"]`).click();
+    await until(async () => (await state()).todos.find((x) => x.id === t.id && x.done), 'to-do done', 10000);
+    const t2 = await api('POST', '/api/todos', { text: 'Summarize the CAN fixtures', scope: list.data.scope });
+    const s = await api('POST', `/api/todos/${t2.id}/dispatch`, { vendor: 'codex', where: 'mini-1', accountId: 'personal', checkoutId: co1 });
+    await until(async () => (await state()).todos.find((x) => x.id === t2.id && x.dispatchedSessionId === s.id), 'dispatched', 10000);
+    return `note saved, to-do toggled, dispatched to ${s.id}`;
+  });
+
+  let reviewId;
+  await check('agent-created review, suggestion and to-do; review decision goes back to the agent; suggestion launches', async () => {
+    await chat(S.cc1.id, 'Write the thermal derating report for rev B');
+    const rv = await until(async () => (await state()).cnodes.find((n) => n.type === 'review' && n.parentId === S.cc1.id), 'review node', 40000);
+    reviewId = rv.id;
+    await until(async () => (await state()).cnodes.find((n) => n.type === 'suggest' && n.parentId === S.cc1.id), 'suggestion node', 10000);
+    await until(async () => (await state()).cnodes.find((n) => n.type === 'htodo' && n.parentId === S.cc1.id), 'agent to-do', 10000);
+    await focus(rv.id);
+    const rn = page.locator(`[data-testid="review-node"][data-node-id="${rv.id}"]`);
+    await rn.waitFor({ timeout: 10000 });
+    await rn.locator('[data-testid="review-check"]').first().click();
+    await rn.locator('[data-testid="review-comment-input"]').fill('Label the axis: ambient or case?');
+    await rn.locator('[data-testid="review-comment-input"]').press('Enter');
+    await rn.locator('[data-testid="review-note"]').fill('Mark the 2 oz curve as an estimate');
+    await page.screenshot({ path: path.join(SHOTS, 'v2-review.png') });
+    await rn.locator('[data-testid="review-changes"]').click();
+    await until(async () => (await api('GET', `/api/sessions/${S.cc1.id}/messages`)).some((m) => m.role === 'user' && /CHANGES REQUESTED/.test(m.text) && /ambient or case/.test(m.text)), 'decision delivered to the agent', 20000);
+    const sg = (await state()).cnodes.find((n) => n.type === 'suggest' && n.parentId === S.cc1.id);
+    await focus(sg.id);
+    await page.locator('[data-testid="suggest-node"] [data-testid="suggest-launch"]').first().click();
+    const launched = await until(async () => (await state()).cnodes.find((n) => n.id === sg.id && n.data.status === 'launched' && n.data.sessionId), 'suggestion launched', 30000);
+    return `review → changes requested (with comment) delivered; suggestion → ${launched.data.sessionId}`;
+  });
+
+  await check('compute cluster: machines with live metrics, devices with locks', async () => {
+    const m = await until(async () => (await state()).machines.find((x) => x.id === 'mini-2' && x.cpu && x.gpu.length), 'mini-2 metrics + GPU', 20000);
+    await focus('mini-1');
+    await page.locator('[data-testid="machine-node"][data-host-id="mini-1"]').first().waitFor({ timeout: 10000 });
+    await page.locator('[data-testid="machine-node"][data-host-id="mini-1"] [data-testid="machine-cpu"]').first().waitFor({ timeout: 10000 });
+    const dev = page.locator('[data-testid="device-node"][data-device-id="mini-1:pcan"]').first();
+    await dev.waitFor({ timeout: 10000 });
+    if ((await dev.getAttribute('data-status')) !== 'connected') throw new Error('PCAN not connected');
+    await dev.locator('[data-testid="device-lock"]').selectOption(S.cx1.id);
+    await until(async () => (await state()).devices.find((d) => d.id === 'mini-1:pcan' && d.lock?.sessionId === S.cx1.id), 'lock assigned', 10000);
+    await page.screenshot({ path: path.join(SHOTS, 'v2-compute.png') });
+    await dev.locator('[data-testid="device-lock"]').selectOption('');
+    await until(async () => (await state()).devices.find((d) => d.id === 'mini-1:pcan' && !d.lock), 'lock released', 10000);
+    return `mini-2 cpu ${m.cpu.pct}% · ${m.gpu[0].name} ${m.gpu[0].memUsedMB}/${m.gpu[0].memTotalMB} MB; PCAN lock assigned + released`;
+  });
+
+  await check('HIL run: locks the plan devices, streams rows, 11 pass / 1 fail, re-run failed', async () => {
+    await focus('mini-1:actuator-vv');
+    const hn = page.locator('[data-testid="hil-node"][data-plan-id="mini-1:actuator-vv"]').first();
+    await hn.waitFor({ timeout: 10000 });
+    await hn.locator('[data-testid="hil-run"]').click();
+    await until(async () => (await state()).devices.filter((d) => d.lock?.sessionId === 'you').length === 3, 'plan devices locked', 10000);
+    const run = await until(async () => (await state()).hil.runs.find((r) => r.planId === 'mini-1:actuator-vv' && r.status !== 'running'), 'run finished', 60000);
+    if (run.pass !== 11 || run.fail !== 1) throw new Error(`${run.pass} pass / ${run.fail} fail`);
+    await hn.locator('[data-testid="hil-row"][data-status="fail"]').first().waitFor({ timeout: 10000 });
+    await page.screenshot({ path: path.join(SHOTS, 'v2-hil.png') });
+    await hn.locator('[data-testid="hil-rerun"]').click();
+    const rr = await until(async () => (await state()).hil.runs.find((r) => r.id !== run.id && r.only?.includes('T-07') && r.status !== 'running'), 're-run finished', 30000);
+    if ((await state()).devices.some((d) => d.lock?.sessionId === 'you')) throw new Error('locks not released');
+    return `${run.pass}/${run.pass + run.fail} pass (T-07 overshoot); re-run of ${rr.only.join(',')} → ${rr.status}`;
+  });
+
+  await check('compute grant: agent requests, you approve on the grant node, agent runs on the host', async () => {
+    const tool = async (name, args) => {
+      const r = await fetchish('POST', `${BASE}/api/mcp/tools/${name}`, { arguments: args, context: { hubSessionId: S.cc1.id, hostId: 'mini-1', cwd: '/home/hosta/code/hexapod-robot', vendor: 'claude' } }, { authorization: `Bearer ${secrets().hookToken}` });
+      return JSON.parse(r.text);
+    };
+    const req = await tool('request_compute', { host: 'mini-2', resources: '1× GPU · 24 GB', purpose: 'Offload FEA solver to GPU' });
+    const gid = req.structuredContent.grantId;
+    const denied = await tool('run_on_host', { grant_id: gid, command: 'whoami' });
+    if (!denied.isError) throw new Error('ran before approval');
+    await focus(S.cc1.id);
+    const gn = page.locator('[data-testid="grant-node"]').first();
+    await gn.waitFor({ timeout: 10000 });
+    await gn.getByRole('button', { name: /approve/i }).click();
+    await until(async () => (await state()).grants.find((g) => g.id === gid && g.status === 'active'), 'grant active', 10000);
+    const ok = await tool('run_on_host', { grant_id: gid, command: 'whoami' });
+    if (ok.isError || !/hostb/.test(ok.content[0].text)) throw new Error(`run_on_host: ${ok.content[0].text}`);
+    return `grant ${gid} approved; run_on_host → ${ok.content[0].text.split('\n')[1]}`;
+  });
+
+  await check('terminal node: real shell over SSH (tmux), typed command echoes', async () => {
+    await focus('mini-2');
+    await page.locator('[data-testid="machine-node"][data-host-id="mini-2"] [data-testid="terminal-open"]').first().click();
+    const tn = await until(async () => (await state()).cnodes.find((n) => n.type === 'terminal' && n.data.hostId === 'mini-2'), 'terminal node', 15000);
+    await focus(tn.id);
+    const term = page.locator(`[data-testid="terminal-node"][data-node-id="${tn.id}"]`);
+    await term.locator('.xterm').waitFor({ timeout: 15000 });
+    await page.waitForTimeout(1200);
+    await term.locator('.xterm').click();
+    await page.keyboard.type('echo smoke-$((40+2)) $(whoami)');
+    await page.keyboard.press('Enter');
+    await until(async () => /smoke-42 hostb/.test(await term.locator('.xterm-rows').innerText()), 'terminal output', 15000);
+    await page.screenshot({ path: path.join(SHOTS, 'v2-terminal.png') });
+    return 'smoke-42 hostb';
+  });
+
+  await check('scan pushed branches: Claude cloud result branch + app found on it', async () => {
+    const s = await spawnFromDialog({ vendor: 'claude', where: 'cloud', checkout: co1, prompt: 'Build a status dashboard app for the rig' });
+    const b = await until(async () => (await state()).branches.find((x) => x.name.startsWith('claude/build-a-status') && x.apps.length && x.cloud?.sessionId === s.id), 'claude/* branch with app', 60000);
+    await focus(b.id);
+    await page.locator(`[data-testid="branch-node"][data-branch-id="${b.id}"]`).getByText('Cloud status board').first().waitFor({ timeout: 10000 });
+    return `${b.name} → apps ${b.apps.map((a) => a.path).join(', ')}, linked to ${s.id}`;
+  });
+
   await check('web push sent for approvals (VAPID, aes128gcm)', async () => {
     if (!pushes.length) throw new Error('no push delivered to the subscription endpoint');
     const p = pushes[0];
@@ -372,4 +567,4 @@ console.log('\n' + results.map((r) => `${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.o
 if (consoleErrors.length) console.log(`\nbrowser console errors (${consoleErrors.length}):\n  ${[...new Set(consoleErrors)].slice(0, 10).join('\n  ')}`);
 fs.writeFileSync(path.join(SHOTS, 'smoke-result.json'), JSON.stringify({ at: new Date().toISOString(), results, consoleErrors: [...new Set(consoleErrors)] }, null, 2));
 console.log(`\n${results.length - failed.length}/${results.length} checks passed; hub log ${LOG}`);
-process.exit(failed.length || results.length < 13 ? 1 : 0);
+process.exit(failed.length || results.length < 25 ? 1 : 0);

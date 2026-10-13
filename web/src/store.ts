@@ -2,7 +2,8 @@
 import { useSyncExternalStore } from 'react';
 import { api } from './api';
 import type {
-  Account, AppNode, Approval, Audit, Checkout, Host, HubEvent, LayoutEntry, Message, Session, StateSnapshot,
+  Account, AppNode, Approval, Audit, Branch, CNode, Checkout, Device, FileSource, Grant, HilPlan, HilRun, Host, HubEvent,
+  LayoutEntry, Machine, Message, Project, Session, StateSnapshot, Todo,
 } from './types';
 
 // ---------- tiny store helper ----------
@@ -45,6 +46,16 @@ export interface HubData {
   config: StateSnapshot['config'];
   messages: Record<string, Message[]>;
   audit: Audit[];
+  // v2
+  projects: Record<string, Project>;
+  branches: Record<string, Branch>;
+  machines: Record<string, Machine>;
+  devices: Record<string, Device>;
+  cnodes: Record<string, CNode>;
+  todos: Record<string, Todo>;
+  grants: Record<string, Grant>;
+  hilPlans: Record<string, HilPlan>;
+  hilRuns: Record<string, HilRun>;
 }
 
 const byId = <T extends { id: string }>(arr: T[] | undefined) => {
@@ -57,6 +68,7 @@ export const hub = createStore<HubData>({
   ready: false, authRequired: false, error: null, connected: false, seq: 0,
   hosts: {}, accounts: {}, checkouts: {}, sessions: {}, approvals: {}, nodes: {}, layout: {}, config: {},
   messages: {}, audit: [],
+  projects: {}, branches: {}, machines: {}, devices: {}, cnodes: {}, todos: {}, grants: {}, hilPlans: {}, hilRuns: {},
 });
 export const useHub = <R,>(sel: (s: HubData) => R) => useStore(hub, sel);
 
@@ -65,7 +77,23 @@ export function applySnapshot(s: StateSnapshot) {
     ready: true, authRequired: false, error: null, seq: s.seq || 0,
     hosts: byId(s.hosts), accounts: byId(s.accounts), checkouts: byId(s.checkouts), sessions: byId(s.sessions),
     approvals: byId(s.approvals), nodes: byId(s.nodes), layout: { ...(s.layout || {}) }, config: s.config || {},
+    projects: byId(s.projects), branches: byId(s.branches), machines: byId(s.machines), devices: byId(s.devices),
+    cnodes: byId(s.cnodes), todos: byId(s.todos), grants: byId(s.grants),
+    hilPlans: byId(s.hil?.plans), hilRuns: byId(s.hil?.runs),
   });
+}
+
+function without<T>(rec: Record<string, T>, id: string): Record<string, T> {
+  if (!(id in rec)) return rec;
+  const o = { ...rec };
+  delete o[id];
+  return o;
+}
+
+/** Optimistically merge an object returned by a command (the event stream confirms it). */
+export function mergeLocal(kind: 'cnodes' | 'todos' | 'branches' | 'sessions' | 'grants' | 'devices' | 'hilRuns', obj: { id: string } | null | undefined) {
+  if (!obj || !obj.id) return;
+  hub.set((s) => ({ [kind]: { ...(s[kind] as Record<string, unknown>), [obj.id]: { ...((s[kind] as Record<string, object>)[obj.id] || {}), ...obj } } }) as Partial<HubData>);
 }
 
 function upsertMsg(list: Message[] | undefined, m: Message): Message[] {
@@ -112,6 +140,17 @@ export function applyEvent(ev: HubEvent) {
       break;
     }
     case 'toast': hub.set({ seq }); toast(d.text, d.level); break;
+    case 'project.upsert': hub.set({ seq, projects: { ...s.projects, [d.id]: d } }); break;
+    case 'branch.upsert': hub.set({ seq, branches: { ...s.branches, [d.id]: d } }); break;
+    case 'branch.remove': hub.set({ seq, branches: without(s.branches, d.id) }); break;
+    case 'machine.upsert': hub.set({ seq, machines: { ...s.machines, [d.id]: d } }); break;
+    case 'device.upsert': hub.set({ seq, devices: { ...s.devices, [d.id]: d } }); break;
+    case 'cnode.upsert': hub.set({ seq, cnodes: { ...s.cnodes, [d.id]: d } }); break;
+    case 'cnode.remove': hub.set({ seq, cnodes: without(s.cnodes, d.id) }); break;
+    case 'todo.upsert': hub.set({ seq, todos: { ...s.todos, [d.id]: d } }); break;
+    case 'todo.remove': hub.set({ seq, todos: without(s.todos, d.id) }); break;
+    case 'grant.upsert': hub.set({ seq, grants: { ...s.grants, [d.id]: d } }); break;
+    case 'hil.upsert': hub.set({ seq, hilRuns: { ...s.hilRuns, [d.id]: d } }); break;
     default: hub.set({ seq });
   }
 }
@@ -134,9 +173,17 @@ export interface UIState {
   toasts: ToastItem[];
   confirm: ConfirmReq | null;
   spawnOpen: boolean;
-  spawnPreset: { checkoutId?: string } | null;
+  spawnPreset: SpawnPreset | null;
   promoteId: string | null;
+  // v2
+  quickOpen: QuickOpenReq | null;
+  branchModal: { projectId: string; base: string; checkoutId?: string } | null;
+  reviewId: string | null;
+  repoSource: FileSource | null;
+  addMenu: { x?: number; y?: number; parentId?: string | null; kind?: string } | null;
 }
+export interface SpawnPreset { checkoutId?: string; branch?: string; prompt?: string; hostId?: string; title?: string }
+export interface QuickOpenReq { source?: FileSource; parentId?: string | null; scopeLabel?: string }
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
 export function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* ignore */ } }
@@ -146,6 +193,7 @@ export const ui = createStore<UIState>({
   layoutMode: (lsGet('hub.layoutMode') as LayoutMode) || 'columns',
   search: '', filter: null, expanded: {}, focusId: null, panTo: null, repoCheckout: null,
   toasts: [], confirm: null, spawnOpen: false, spawnPreset: null, promoteId: null,
+  quickOpen: null, branchModal: null, reviewId: null, repoSource: null, addMenu: null,
 });
 export const useUI = <R,>(sel: (s: UIState) => R) => useStore(ui, sel);
 

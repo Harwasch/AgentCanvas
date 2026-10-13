@@ -1,7 +1,7 @@
 // Thin client for the hub HTTP API (docs/API.md). In mock mode every request is
 // routed to an in-page handler instead of fetch().
 import type {
-  AppNode, Audit, CallToolResult, Checkout, Message, Review, Session, StateSnapshot,
+  AppNode, Audit, Branch, CNode, CallToolResult, Checkout, FileKind, FileSource, Grant, Message, Review, Session, StateSnapshot, Todo,
 } from './types';
 
 export interface ApiResponse<T = any> { ok: boolean; status: number; data: T }
@@ -9,6 +9,48 @@ export type MockHandler = (method: string, path: string, body?: unknown) => Prom
 
 let mock: MockHandler | null = null;
 export function setMockHandler(h: MockHandler | null) { mock = h; }
+
+/** Minimal WebSocket surface used by terminal nodes (a real WebSocket, or the mock's fake). */
+export interface TermSocket {
+  binaryType: BinaryType;
+  readyState: number;
+  onopen: ((e?: unknown) => void) | null;
+  onmessage: ((e: { data: unknown }) => void) | null;
+  onclose: ((e?: unknown) => void) | null;
+  onerror: ((e?: unknown) => void) | null;
+  send(data: string): void;
+  close(): void;
+}
+let mockTerm: ((id: string) => TermSocket) | null = null;
+export function setMockTerminal(f: ((id: string) => TermSocket) | null) { mockTerm = f; }
+export function openTerminalSocket(id: string): TermSocket {
+  if (mockTerm) return mockTerm(id);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/api/terminals/${encodeURIComponent(id)}/ws`);
+  ws.binaryType = 'arraybuffer';
+  return ws as unknown as TermSocket;
+}
+
+/** URL of a file's raw bytes (img/iframe src). In mock mode the mock serves blob/data URLs. */
+let mockRaw: ((source: FileSource, path: string, sha?: string) => string) | null = null;
+export function setMockRaw(f: typeof mockRaw) { mockRaw = f; }
+export function rawUrl(source: FileSource, path: string, sha?: string | null): string {
+  if (mockRaw) return mockRaw(source, path, sha || undefined);
+  const q = new URLSearchParams({ source: JSON.stringify(source), path });
+  if (sha) q.set('sha', sha);
+  return `/api/files/raw?${q.toString()}`;
+}
+/** Fetch a file's raw bytes as text (rendered docs, code). */
+export async function fetchRawText(source: FileSource, path: string, sha?: string | null): Promise<string> {
+  const r = await fetch(rawUrl(source, path, sha), { credentials: 'same-origin' });
+  if (!r.ok) throw new ApiError(r.status, { message: await r.text().catch(() => '') });
+  return r.text();
+}
+export async function fetchRawBytes(source: FileSource, path: string, sha?: string | null): Promise<ArrayBuffer> {
+  const r = await fetch(rawUrl(source, path, sha), { credentials: 'same-origin' });
+  if (!r.ok) throw new ApiError(r.status, { message: await r.text().catch(() => '') });
+  return r.arrayBuffer();
+}
 export const isMock = () => mock !== null;
 
 export class ApiError extends Error {
@@ -74,4 +116,30 @@ export const api = {
   vapid: () => call<{ publicKey: string }>('GET', '/api/push/vapid'),
   pushSubscribe: (subscription: unknown) => call('POST', '/api/push/subscribe', { subscription }),
   pushTest: () => call('POST', '/api/push/test', {}),
+
+  // ---- v2
+  createCNode: (body: { type: 'note' | 'todos' | 'file' | 'terminal'; parentId?: string | null; data: unknown }) => call<CNode>('POST', '/api/cnodes', body),
+  updateCNode: (id: string, data: unknown) => call<CNode>('POST', `/api/cnodes/${enc(id)}`, { data }),
+  deleteCNode: (id: string) => call('DELETE', `/api/cnodes/${enc(id)}`),
+  latest: (id: string) => call<CNode>('POST', `/api/cnodes/${enc(id)}/latest`, {}),
+  createTodo: (text: string, scope: string | null) => call<Todo>('POST', '/api/todos', { text, scope }),
+  updateTodo: (id: string, patch: { text?: string; done?: boolean }) => call<Todo>('POST', `/api/todos/${enc(id)}`, patch),
+  deleteTodo: (id: string) => call('DELETE', `/api/todos/${enc(id)}`),
+  dispatchTodo: (id: string, body: { vendor: string; where: 'host' | 'cloud'; hostId?: string; accountId: string; checkoutId?: string; branchId?: string }) =>
+    call<Session>('POST', `/api/todos/${enc(id)}/dispatch`, body),
+  launchSuggestion: (id: string, body: { vendor?: string; where?: 'host' | 'cloud'; hostId?: string; accountId?: string; checkoutId?: string } = {}) =>
+    call<Session>('POST', `/api/suggestions/${enc(id)}/launch`, body),
+  dismissSuggestion: (id: string) => call('POST', `/api/suggestions/${enc(id)}/dismiss`, {}),
+  reviewDecision: (id: string, decision: 'approve' | 'changes', note?: string) => call('POST', `/api/reviews/${enc(id)}/decision`, { decision, note }),
+  reviewComment: (id: string, text: string) => call('POST', `/api/reviews/${enc(id)}/comments`, { text }),
+  listFiles: (source: FileSource, q = '') => call<{ files: { path: string; kind: FileKind }[] }>('GET', `/api/files/list?source=${enc(JSON.stringify(source))}&q=${enc(q)}`),
+  createBranch: (body: { projectId: string; checkoutId: string; base: string; name: string; goal?: string; push?: boolean }) => call<Branch>('POST', '/api/branches', body),
+  refreshBranch: (id: string) => call<Branch>('POST', `/api/branches/${enc(id)}/refresh`, {}),
+  lockDevice: (id: string, sessionId: string | null) => call('POST', `/api/devices/${enc(id)}/lock`, { sessionId }),
+  createGrant: (body: { sessionId: string; hostId: string; resources: string; purpose: string; quotaGB?: number }) => call<Grant>('POST', '/api/grants', body),
+  setGrant: (id: string, status: 'active' | 'revoked') => call<Grant>('POST', `/api/grants/${enc(id)}`, { status }),
+  hilRun: (planId: string) => call('POST', `/api/hil/${enc(planId)}/run`, {}),
+  hilAbort: (runId: string) => call('POST', `/api/hil/runs/${enc(runId)}/abort`, {}),
+  hilRerun: (runId: string) => call('POST', `/api/hil/runs/${enc(runId)}/rerun-failed`, {}),
+  closeTerminal: (id: string) => call('DELETE', `/api/terminals/${enc(id)}`),
 };

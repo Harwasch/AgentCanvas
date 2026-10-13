@@ -1,27 +1,15 @@
-import { createContext, memo, useContext, useEffect, useRef, useState } from 'react';
+import { memo, useContext, useRef, useState } from 'react';
 import { api } from '../api';
 import { LIVE_ZOOM, useView } from '../canvas/view';
 import { setExpanded, toast, ui, useHub, useUI } from '../store';
 import type { AppNode as AppNodeT } from '../types';
 import { Icon } from '../ui';
 import { AppFrame } from './AppFrame';
+import { ViewportCtx, useInView } from './common';
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
-/** The canvas viewport element (IntersectionObserver root). */
-export const ViewportCtx = createContext<HTMLElement | null>(null);
-
-function useInView(ref: React.RefObject<HTMLElement>, root: HTMLElement | null) {
-  const [inView, setInView] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof IntersectionObserver === 'undefined') { setInView(true); return; }
-    const io = new IntersectionObserver((es) => es.forEach((e) => setInView(e.isIntersecting)), { root, rootMargin: '120px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [ref, root]);
-  return inView;
-}
+export { ViewportCtx };
 
 export const STATUS_COLORS: Record<string, string> = { running: '#43D1B0', starting: '#FFD23F', stopped: '#8A8F98', error: '#E5484D' };
 

@@ -70,7 +70,10 @@ export async function claudeCloud(argv) {
 }
 
 function spawnVm(id, why) {
-  const c = spawn(process.execPath, ['--no-warnings', new URL('./stub-claude.mjs', import.meta.url).pathname, '--cloud', '__vm', id, why], { detached: true, stdio: 'ignore', env: process.env });
+  // the cloud environment's network secrets (configured by the user in claude.ai) are the VM's env
+  const s = readJson(claudeStore(), {})[id] || {};
+  const envSecrets = readJson(path.join(claudeDir(), 'stub-cloud', 'environments.json'), {})[s.env] || {};
+  const c = spawn(process.execPath, ['--no-warnings', new URL('./stub-claude.mjs', import.meta.url).pathname, '--cloud', '__vm', id, why], { detached: true, stdio: 'ignore', env: { ...process.env, ...envSecrets, CLAUDE_CODE_REMOTE: 'true' } });
   c.unref();
 }
 
@@ -79,9 +82,6 @@ async function vm(id, why) {
   const store = readJson(claudeStore(), {});
   const s = store[id];
   if (!s) return;
-  // "network secret" configured for the cloud environment (set up by the user in claude.ai)
-  const envSecrets = readJson(path.join(claudeDir(), 'stub-cloud', 'environments.json'), {})[s.env] || {};
-  Object.assign(process.env, envSecrets, { CLAUDE_CODE_REMOTE: 'true' });
   const base = { session_id: id, transcript_path: `/root/.claude/projects/-home-user-${s.repo}/${id}.jsonl`, cwd: `/home/user/${s.repo}`, permission_mode: 'default' };
   const settings = [s.settings || {}];
   const update = (patch) => {

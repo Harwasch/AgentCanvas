@@ -109,9 +109,11 @@ for u in hosta hostb; do
   echo '{"stubLogin":"personal"}' | sudo -u "$u" tee "$h/.claude-personal/.stub-auth.json" "$h/.codex/.stub-auth.json" >/dev/null
   echo '{"stubLogin":"work"}' | sudo -u "$u" tee "$h/.claude-work/.stub-auth.json" "$h/.codex-work/.stub-auth.json" >/dev/null
 done
-# hub-side profiles for cloud adapters
+# hub-side profiles for cloud adapters (stub "logins")
 for a in personal work; do
   install -d -o "$HUB_USER" "$DATA/profiles/$a/claude" "$DATA/profiles/$a/codex" "$DATA/profiles/$a/scratch"
+  echo "{\"stubLogin\":\"$a\"}" > "$DATA/profiles/$a/claude/.stub-auth.json"
+  echo "{\"stubLogin\":\"$a\"}" > "$DATA/profiles/$a/codex/.stub-auth.json"
 done
 
 # --- hub config --------------------------------------------------------------

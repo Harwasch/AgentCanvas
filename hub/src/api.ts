@@ -150,7 +150,8 @@ export function routes(c: Ctx): Router {
   r.post('/api/apps/:id/promote', 'hub', async (req) => {
     node(req.params.id);
     try {
-      return await c.apps.promote(req.params.id, { commit: need(req.body?.commit, 'commit'), grantActuate: !!req.body?.grantActuate });
+      const b = req.body || {};
+      return await c.apps.promote(req.params.id, { commit: need(b.commit, 'commit'), grantActuate: !!b.grantActuate, commitDirty: !!b.commitDirty, reviewHash: b.reviewHash });
     } catch (e: any) {
       throw new HttpError(409, e.message);
     }

@@ -52,8 +52,8 @@ Audit    { id, ts, app_node_id, tool, tier, caller, args, allowed, reason, resul
 - `POST /api/apps/publish` `{ hostId, dir, sessionId? }` → AppNode (repo-scan "unpublished app" path)
 - `POST /api/apps/:id/call` `{ tool, arguments, confirmed }` → MCP `CallToolResult`, or `409 {code, reason}` when policy refuses (`undeclared|preview|not_granted|needs_confirm|rate_limited`)
 - `POST /api/apps/:id/resource` `{ uri }` → MCP `resources/read` result
-- `GET  /api/apps/:id/review` → `{ version, candidateCommit, dirtyFiles, tools, serverFiles: {path, content}[] }`
-- `POST /api/apps/:id/promote` `{ commit, grantActuate: boolean }` → AppNode
+- `GET  /api/apps/:id/review` → `{ version, candidateCommit, dirtyFiles: string[], tools, lifecycle, serverFiles: {path, content}[], reviewHash }`
+- `POST /api/apps/:id/promote` `{ commit: candidateCommit, grantActuate: boolean, commitDirty?: boolean, reviewHash }` → AppNode. When `dirtyFiles` is non-empty the hub refuses unless `commitDirty:true` ("Commit & pin"): it commits exactly the reviewed app files (refused if `reviewHash` no longer matches) and pins that commit.
 - `POST /api/apps/:id/reload`
 - `DELETE /api/apps/:id`
 - `GET  /api/apps/:id/ui?v=<version>` → the app HTML with a deny-by-default CSP header (iframe `src`; iframe is `sandbox="allow-scripts allow-forms"`, never `allow-same-origin`)

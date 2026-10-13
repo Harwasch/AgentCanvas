@@ -333,11 +333,12 @@ export class AppService {
       const i = chunk.indexOf('\n');
       return { path: chunk.slice(0, i), content: chunk.slice(i + 1) };
     });
-    return { id, version: r.version, state: r.state, candidateCommit: head.code === 0 ? commit : null, dirtyFiles: dirty.filter(Boolean), tools: m.tools, lifecycle: m.lifecycle, serverFiles };
+    const reviewHash = crypto.createHash('sha256').update(JSON.stringify(serverFiles)).digest('hex').slice(0, 16);
+    return { id, version: r.version, state: r.state, candidateCommit: head.code === 0 ? commit : null, dirtyFiles: dirty.filter(Boolean), tools: m.tools, lifecycle: m.lifecycle, serverFiles, reviewHash };
   }
 
   /** Pin a git commit, run the server from a worktree at that commit, and (optionally) grant actuate for this version. */
-  async promote(id: string, o: { commit: string; grantActuate: boolean }) {
+  async promote(id: string, o: { commit: string; grantActuate: boolean; commitDirty?: boolean; reviewHash?: string }) {
     let r = this.row(id)!;
     if (r.preview_of) {
       // promoting a preview version replaces the pinned node's version
@@ -349,10 +350,18 @@ export class AppService {
       }
     }
     if (!/^[0-9a-f]{7,40}$/.test(o.commit)) throw new Error('commit must be a git sha');
-    const dirty = await this.c.hosts.execOk(r.host_id, `git -C ${q(r.dir)} status --porcelain -- .`);
-    const head = (await this.c.hosts.execOk(r.host_id, `git -C ${q(r.dir)} rev-parse HEAD`)).trim();
+    const rev = await this.review(id);
+    if (o.reviewHash && rev.reviewHash !== o.reviewHash) throw new Error('app files changed since you reviewed them; review again');
+    let head = (await this.c.hosts.execOk(r.host_id, `git -C ${q(r.dir)} rev-parse HEAD`)).trim();
     if (!head.startsWith(o.commit)) throw new Error(`HEAD moved: reviewed ${o.commit.slice(0, 8)}, now ${head.slice(0, 8)}; review again`);
-    if (dirty.trim()) throw new Error(`app has uncommitted changes; commit them before promoting:\n${dirty}`);
+    if (rev.dirtyFiles.length) {
+      if (!o.commitDirty || !o.reviewHash) throw new Error(`app has uncommitted changes; commit them (or use "commit & pin" after review):\n${rev.dirtyFiles.join('\n')}`);
+      // commit exactly the reviewed app files under the session account's git identity
+      const acct = this.c.account(this.c.store.session(r.session_id)?.account_id ?? this.c.cfg.accounts[0].id);
+      const ident = `-c user.name=${q(acct.git?.name || 'agent-hub')} -c user.email=${q(acct.git?.email || 'hub@localhost')}`;
+      await this.c.hosts.execOk(r.host_id, `cd ${q(r.dir)} && git add -A -- . && git ${ident} commit -q -m ${q(`Pin ${r.title} v${r.version} for promotion (Agent Hub)`)} -- .`);
+      head = (await this.c.hosts.execOk(r.host_id, `git -C ${q(r.dir)} rev-parse HEAD`)).trim();
+    }
     const root = await this.repoRoot(r.host_id, r.dir);
     const rel = r.dir.slice(root.length + 1);
     const pinDir = `$HOME/.agent-hub/pins/${id}-${head.slice(0, 12)}`;

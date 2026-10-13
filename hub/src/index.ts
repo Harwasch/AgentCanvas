@@ -17,6 +17,7 @@ import { AppService } from './apps/service.js';
 import { Push } from './push.js';
 import { routes } from './api.js';
 import { createServer, cookies, bearer, safeEqual, json, hubOrigins, crossOriginReason, type Auth, type Req, type Res } from './http.js';
+import { hostForToken } from './tokens.js';
 import type { Ctx } from './ctx.js';
 import { ProjectService } from './projects.js';
 import { FileService } from './files.js';
@@ -67,7 +68,12 @@ export async function main() {
     const tok = bearer(req) ?? (auth === 'hub' ? cookies(req).hub_token : undefined);
     if (!tok) return false;
     if (auth === 'hub') return safeEqual(tok, secrets.hubToken);
-    if (auth === 'hook') return safeEqual(tok, secrets.hookToken);
+    if (auth === 'hook') {
+      // per-host token (HMAC of the hook secret): the request speaks for that host only
+      const host = hostForToken(secrets.hookToken, cfg.hosts.map((h) => h.id), tok);
+      if (host) req.authHost = host;
+      return !!host;
+    }
     if (auth === 'cloudHook') return safeEqual(tok, secrets.cloudHookToken);
     if (auth === 'mcp') return safeEqual(tok, secrets.mcpToken);
     return false;
@@ -137,6 +143,8 @@ export async function main() {
   L(`canvas MCP for Claude Code / Desktop: ${cfg.publicUrl.replace(/\/$/, '')}/mcp (bearer: mcpToken in ${path.join(cfg.dataDir, 'secrets.json')})`);
 
   hosts.start();
+  // refresh each host's hub.env / channel script on start (tokens are per host)
+  for (const h of cfg.hosts) c.boot.ensure(h.id).catch((e) => L(`bootstrap ${h.id}: ${e.message}`));
   c.repos.start();
   c.cloud.start();
   c.apps.start();

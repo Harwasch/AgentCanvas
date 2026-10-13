@@ -18,7 +18,9 @@ Canvas tools (canvas_*, hub_*) are listed by the hub itself (GET /api/mcp/tools)
 they stay in step with the hub version without re-copying this script.
 
 Hub tools (publish_app, app_status, screenshot_app, unpublish_app, app_call) are
-POSTed to the hub over HTTPS with the host token from ~/.agent-hub/hub.env.
+POSTed to the hub over HTTPS with this host's token from ~/.agent-hub/hub.env; a session
+started by the hub adds its own HUB_SESSION_TOKEN (from its environment) so the hub knows
+which session is calling.
 Only the hub can write to the channel: the socket is 0600 in a 0700 directory.
 """
 import json, os, socket, ssl, sys, threading, time, urllib.request, urllib.error
@@ -165,8 +167,10 @@ def all_tools():
 
 def hub_call(tool, args):
     url = ENV.get("HUB_URL", "").rstrip("/") + "/api/mcp/tools/" + tool
+    # host token in the Authorization header; a hub-started Claude session also proves its id with its own secret
     body = json.dumps({"arguments": args, "context": {
-        "hubSessionId": SESSION or None, "hostId": ENV.get("HUB_HOST_ID"), "cwd": os.getcwd(),
+        "hubSessionId": SESSION or None, "hubSessionToken": ENV.get("HUB_SESSION_TOKEN") or None,
+        "hostId": ENV.get("HUB_HOST_ID"), "cwd": os.getcwd(),
         "vendor": "claude" if CHANNEL else "codex", "user": os.environ.get("USER")}}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "content-type": "application/json", "authorization": "Bearer " + ENV.get("HUB_TOKEN", "")})

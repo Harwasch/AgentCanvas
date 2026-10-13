@@ -60,6 +60,10 @@ const hub = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'hub/dist/
 });
 process.on('exit', () => hub.kill());
 const secrets = () => JSON.parse(fs.readFileSync(path.join(CFG.dataDir, 'secrets.json'), 'utf8'));
+// what the hub writes to a host's hub.env / a session's environment (HMAC of the hook secret)
+const hmac = (what) => crypto.createHmac('sha256', secrets().hookToken).update(what).digest('base64url');
+const hostTok = (hostId) => hmac(`host:${hostId}`);
+const sessTok = (sessionId) => hmac(`session:${sessionId}`);
 const agent = new https.Agent({ rejectUnauthorized: false });
 async function api(method, p, body) {
   const r = await fetchish(method, BASE + p, body, { authorization: `Bearer ${secrets().hubToken}` });
@@ -489,8 +493,9 @@ try {
   });
 
   await check('compute grant: agent requests, you approve on the grant node, agent runs on the host', async () => {
+    // as hub_channel.py in cc1 calls it: mini-1's host token + cc1's own session secret
     const tool = async (name, args) => {
-      const r = await fetchish('POST', `${BASE}/api/mcp/tools/${name}`, { arguments: args, context: { hubSessionId: S.cc1.id, hostId: 'mini-1', cwd: '/home/hosta/code/hexapod-robot', vendor: 'claude' } }, { authorization: `Bearer ${secrets().hookToken}` });
+      const r = await fetchish('POST', `${BASE}/api/mcp/tools/${name}`, { arguments: args, context: { hubSessionId: S.cc1.id, hubSessionToken: sessTok(S.cc1.id), hostId: 'mini-1', cwd: '/home/hosta/code/hexapod-robot', vendor: 'claude' } }, { authorization: `Bearer ${hostTok('mini-1')}` });
       return JSON.parse(r.text);
     };
     const req = await tool('request_compute', { host: 'mini-2', resources: '1× GPU · 24 GB', purpose: 'Offload FEA solver to GPU' });
@@ -505,6 +510,24 @@ try {
     const ok = await tool('run_on_host', { grant_id: gid, command: 'whoami' });
     if (ok.isError || !/hostb/.test(ok.content[0].text)) throw new Error(`run_on_host: ${ok.content[0].text}`);
     return `grant ${gid} approved; run_on_host → ${ok.content[0].text.split('\n')[1]}`;
+  });
+
+  await check('hub tools: a session id needs its own secret and its own host (no impersonation)', async () => {
+    const call = (tok, ctx) => fetchish('POST', `${BASE}/api/mcp/tools/list_devices`, { arguments: {}, context: { cwd: '/tmp', vendor: 'claude', ...ctx } }, { authorization: `Bearer ${tok}` });
+    const other = (await state()).sessions.find((x) => x.vendor === 'claude' && x.kind === 'local' && x.host_id === 'mini-1' && x.id !== S.cc1.id) ?? S.cc1;
+    const cases = [
+      ['wrong session token', await call(hostTok('mini-1'), { hubSessionId: S.cc1.id, hubSessionToken: sessTok('cc-someone-else'), hostId: 'mini-1' }), 403],
+      ['no session token', await call(hostTok('mini-1'), { hubSessionId: other.id, hostId: 'mini-1' }), 403],
+      ["another host's token", await call(hostTok('mini-2'), { hubSessionId: S.cc1.id, hubSessionToken: sessTok(S.cc1.id) }), 403],
+      ['body claims another host', await call(hostTok('mini-2'), { hostId: 'mini-1' }), 403],
+      ['the old shared hook secret', await call(secrets().hookToken, {}), 401],
+      ['own token + own secret', await call(hostTok('mini-1'), { hubSessionId: S.cc1.id, hubSessionToken: sessTok(S.cc1.id), hostId: 'mini-1' }), 200],
+    ];
+    const bad = cases.filter(([, r, want]) => r.status !== want);
+    if (bad.length) throw new Error(bad.map(([n, r, want]) => `${n}: ${r.status} (want ${want}) ${r.text.slice(0, 120)}`).join('; '));
+    const hook = await fetchish('POST', `${BASE}/hooks/claude`, { session_id: S.cc1.native_id, hook_event_name: 'Notification', message: 'x', cwd: '/tmp', transcript_path: '/tmp/x' }, { authorization: `Bearer ${hostTok('mini-1')}`, 'x-hub-session-token': sessTok('cc-forged') });
+    if (hook.status !== 403) throw new Error(`forged hook accepted (${hook.status})`);
+    return cases.map(([n, r]) => `${n} → ${r.status}`).join(', ') + `; forged hook → ${hook.status}`;
   });
 
   await check('terminal node: real shell over SSH (tmux), typed command echoes', async () => {

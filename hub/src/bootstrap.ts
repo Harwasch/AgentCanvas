@@ -10,6 +10,7 @@ import { HostManager, rpath, q } from './ssh.js';
 import { CodexAdapter } from './adapters.js';
 import { log } from './events.js';
 import { CANVAS_TOOL_NAMES } from './canvas.js';
+import { hostToken } from './tokens.js';
 
 const L = log('bootstrap');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -26,8 +27,9 @@ export function claudeHookSettings(cfg: HubConfig) {
   const hook = (timeout: number) => ({
     type: 'http',
     url: `${cfg.hostCallbackUrl.replace(/\/$/, '')}/hooks/claude`,
-    headers: { Authorization: 'Bearer $HUB_HOOK_TOKEN' },
-    allowedEnvVars: ['HUB_HOOK_TOKEN'],
+    // host token from hub.env; the session secret proves which hub session the hook comes from
+    headers: { Authorization: 'Bearer $HUB_HOOK_TOKEN', 'X-Hub-Session-Token': '$HUB_SESSION_TOKEN' },
+    allowedEnvVars: ['HUB_HOOK_TOKEN', 'HUB_SESSION_TOKEN'],
     timeout,
   });
   const hooks: Record<string, any[]> = {};
@@ -67,10 +69,12 @@ export class Bootstrapper {
     await this.hosts.execOk(hostId, `mkdir -p ${q(base)}/run && chmod 700 ${q(base)} ${q(base)}/run`);
     const caOnHost = this.cfg.tls?.ca ? `${base}/hub-ca.pem` : '';
     if (this.cfg.tls?.ca) await this.hosts.put(hostId, caOnHost, fs.readFileSync(this.cfg.tls.ca, 'utf8'), '644');
+    // this host's own token: the hub maps it back to hostId, so a host can only speak for itself
+    const tok = hostToken(this.secrets.hookToken, hostId);
     const env = [
       `HUB_URL=${this.cfg.hostCallbackUrl}`,
-      `HUB_TOKEN=${this.secrets.hookToken}`,
-      `HUB_HOOK_TOKEN=${this.secrets.hookToken}`,
+      `HUB_TOKEN=${tok}`,
+      `HUB_HOOK_TOKEN=${tok}`,
       `HUB_HOST_ID=${hostId}`,
       ...(caOnHost ? [`HUB_CA_FILE=${caOnHost}`, `NODE_EXTRA_CA_CERTS=${caOnHost}`] : []),
     ].join('\n');

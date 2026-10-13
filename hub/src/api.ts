@@ -9,6 +9,7 @@ import { log } from './events.js';
 import { routesV2 } from './api2.js';
 import { spawnSession, sendToSession } from './nodes.js';
 import { layoutEntry, mergeSize, type CanvasCaller } from './canvas.js';
+import { sessionCallerReason } from './tokens.js';
 
 const L = log('api');
 
@@ -221,6 +222,13 @@ export function routes(c: Ctx): Router {
   r.post('/hooks/claude', 'hook', (req, res) => {
     const p = parseHook(req.body);
     if (!p.ok) return json(res, 400, { error: p.error });
+    // a host token only speaks for sessions on that host, and a session launched with a secret must send it
+    const hs = c.store.sessionByNative(p.hook.sessionId);
+    const why = hs && sessionCallerReason(c.secrets.hookToken, req.authHost, hs, req.headers['x-hub-session-token']);
+    if (why) {
+      L(`hook ${p.hook.event} refused: ${why}`);
+      return json(res, 403, { error: why });
+    }
     const held = c.claude.onHook(p.hook, res);
     if (!held) return json(res, 200, {});
   });
@@ -238,13 +246,23 @@ export function routes(c: Ctx): Router {
     const tool = req.params.tool;
     const text = (t: string) => ({ type: 'text', text: t });
     const err = (t: string) => ({ isError: true, content: [text(t)] });
-    // resolve the calling session: Claude passes HUB_SESSION_ID; Codex calls are matched by host + cwd
-    let s = ctx.hubSessionId ? c.store.session(ctx.hubSessionId) : undefined;
-    if (!s && ctx.hostId) {
-      const cands = c.store.sessions("host_id=? AND kind='local' AND status!='ended'", ctx.hostId).filter((x) => x.vendor === (ctx.vendor || x.vendor));
+    // the host comes from the token, never the body
+    const hostId = req.authHost!;
+    if (ctx.hostId && ctx.hostId !== hostId) throw new HttpError(403, `token is for ${hostId}, not ${ctx.hostId}`);
+    // resolve the calling session: Claude passes HUB_SESSION_ID + its HUB_SESSION_TOKEN; Codex calls are matched by host + cwd
+    let s = ctx.hubSessionId ? c.store.session(String(ctx.hubSessionId)) : undefined;
+    if (ctx.hubSessionId) {
+      if (!s) throw new HttpError(403, `unknown session ${ctx.hubSessionId}`);
+      const why = sessionCallerReason(c.secrets.hookToken, hostId, s, ctx.hubSessionToken);
+      if (why) {
+        L(`tool ${tool} refused: ${why}`);
+        throw new HttpError(403, why);
+      }
+    } else {
+      // host-level identity (Codex passes no session id): only Codex sessions on the token's host
+      const cands = c.store.sessions("host_id=? AND kind='local' AND status!='ended' AND vendor='codex'", hostId);
       s = cands.filter((x) => x.cwd && ctx.cwd && (ctx.cwd === x.cwd || ctx.cwd.startsWith(x.cwd + '/'))).sort((a, b) => b.updated_at - a.updated_at)[0] ?? cands.sort((a, b) => b.updated_at - a.updated_at)[0];
     }
-    const hostId = s?.host_id ?? ctx.hostId;
     const agent: Caller = { kind: 'agent', id: s?.id ?? 'unknown', label: s ? `${s.vendor} ${s.title}` : `agent on ${hostId}` };
     const assistant = s?.meta?.role === 'assistant';
     if (c.canvas.has(tool)) {

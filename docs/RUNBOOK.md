@@ -166,7 +166,7 @@ For anything missing, give the exact fix and who does it. Install nothing on oth
    Then run `systemctl --user daemon-reload && systemctl --user enable --now agent-hub`.
 4. **HTTPS:** `sudo tailscale serve --bg --https=443 http://127.0.0.1:8443`.
 5. **Watch:** follow `journalctl --user -u agent-hub -f` for 60 s. Every host should go online and repos should be indexed. Fix config problems. Check that `~/.agent-hub/secrets.json` is mode 600.
-6. **[HUMAN]:** the laptop is set up in phase 6. For now, check the UI from this machine, e.g. `curl -s https://<tailnet name>/healthz`.
+6. **Check the UI from this machine:** `curl -s https://<tailnet name>/healthz`. The laptop is set up in phase 6.
 
 **Done when:**
 - the service is active;

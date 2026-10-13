@@ -1,7 +1,7 @@
 // PROJECT (= the repo's default branch): GitHub account, stats, folder sizes, README, worktrees.
 import { memo, useMemo } from 'react';
 import { ui, useHub } from '../store';
-import { Icon, isActive } from '../ui';
+import { Icon, isActive, timeAgo } from '../ui';
 import { Chevron, SheetBack, stop, type NodeMode } from './common';
 import { Markdown } from './Markdown';
 import { CiChip, Worktrees } from './RepoBits';
@@ -48,6 +48,11 @@ function ProjectNodeImpl({ id, mode }: { id: string; mode: NodeMode }) {
         <Chevron id={id} mode={mode} />
       </div>
       <div className="mono ell" style={{ fontSize: 11, color: '#8A8F98', marginTop: -4, flex: 'none' }}>{p.gh ? `${p.gh.owner}/${p.gh.repo}` : p.remoteUrl || 'no remote'}</div>
+      {p.gh && p.githubError ? (
+        <div className="ell" data-testid="project-gh-stale" title={p.githubError} style={{ fontSize: 11, color: '#E8B04B', marginTop: -6, flex: 'none' }}>
+          GitHub unreachable · branches, PRs and CI as of {p.githubAt ? timeAgo(p.githubAt) : 'the last sync'}
+        </div>
+      ) : null}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px 8px', borderTop: '1px solid #24272D', paddingTop: 10, flex: 'none' }}>
         {stats.map(([k, v]) => (

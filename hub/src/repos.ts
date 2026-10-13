@@ -41,6 +41,12 @@ export function parsePorcelainV2(out: string): PorcelainStatus {
   return st;
 }
 
+/** head, branch, upstream, dirty count or ahead/behind changed (or the checkout is new) */
+export function checkoutMoved(prev: Record<string, any> | undefined, next: Record<string, any>): boolean {
+  if (!prev) return true;
+  return ['repo_id', 'branch', 'head', 'upstream', 'ahead', 'behind', 'dirty'].some((k) => (prev[k] ?? null) !== (next[k] ?? null));
+}
+
 export class RepoIndexer {
   private timer?: NodeJS.Timeout;
   constructor(private c: Ctx) {}
@@ -120,12 +126,14 @@ export class RepoIndexer {
       apps.push({ dir, id: m.id ?? dir.split('/').pop(), title: m.title ?? dir });
     }
     const id = `${hostId}:${path}`;
+    const prev = this.c.db.get('SELECT repo_id, branch, head, upstream, ahead, behind, dirty FROM checkout WHERE id=?', id);
     this.c.db.upsert('checkout', {
       id, host_id: hostId, path, repo_id: repoId, branch: st.branch, head: st.head, head_subject: subject ?? null, head_time: ct ? Number(ct) * 1000 : null, upstream: st.upstream,
       ahead: st.ahead, behind: st.behind, dirty: st.changes.length, changes: st.changes, apps, updated_at: Date.now(),
     });
     this.c.bus.publish('checkout.upsert', this.checkout(id));
-    this.c.projects?.touch(repoId);
+    // the project (and its GitHub facts) refreshes on its own poll; a scan only nudges it when the checkout really moved
+    if (checkoutMoved(prev, { repo_id: repoId, branch: st.branch, head: st.head, upstream: st.upstream, ahead: st.ahead, behind: st.behind, dirty: st.changes.length })) this.c.projects?.touch(repoId);
   }
 
   async files(id: string) {

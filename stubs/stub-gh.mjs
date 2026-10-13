@@ -2,7 +2,10 @@
 // stub-gh: stands in for the GitHub CLI (`gh api …`, `gh auth status`) in tests.
 // Repos are the test env's bare git repos (STUB_GH_GIT_ROOT/<repo>.git, owner ignored);
 // pull requests, reviews and check runs come from $GH_CONFIG_DIR/stub-github.json:
-//   { "pulls": { "<owner>/<repo>": [ { number, title, state, draft, merged, head, base, reviews: [state…], checks: [{name, status, conclusion}] } ] } }
+//   { "pulls": { "<owner>/<repo>": [ { number, title, state, draft, merged, head, base, reviews: [state…], checks: [{name, status, conclusion}],
+//                                      statuses: [{context, state}] } ] },
+//     "checks": { "<branch>": [...] }, "statuses": { "<branch>": [...] } }
+// List endpoints honour per_page and page; --paginate is accepted and ignored (one page per call).
 // Output shapes follow the GitHub REST API (v2022-11-28) for the fields the hub reads.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -55,6 +58,13 @@ const fixtures = (() => {
 const pulls = (fixtures.pulls || {})[`${owner}/${repo}`] || [];
 const out = (v) => process.stdout.write(JSON.stringify(v, null, 2) + '\n');
 const html = `https://github.com/${owner}/${repo}`;
+// one page of a list endpoint (per_page default 30, page from 1)
+const paged = (list) => {
+  const per = Math.max(1, Number(q.get('per_page') || 30));
+  const page = Math.max(1, Number(q.get('page') || 1));
+  return list.slice((page - 1) * per, page * per);
+};
+const branchOf = (sha) => gits('for-each-ref', '--points-at', sha, '--format=%(refname:short)', 'refs/heads').trim().split('\n')[0];
 const resolve = (ref) => {
   try {
     return gits('rev-parse', '--verify', '-q', `${ref}^{commit}`).trim();
@@ -71,14 +81,14 @@ if (!r0) {
   out({ id: 1, name: repo, full_name: `${owner}/${repo}`, private: true, html_url: html, default_branch: defaultBranch(), size, owner: { login: owner } });
 } else if (r0 === 'branches') {
   const lines = gits('for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads').trim().split('\n').filter(Boolean);
-  out(lines.map((l) => {
+  out(paged(lines.map((l) => {
     const [name, sha] = l.split(' ');
     return { name, commit: { sha, url: `${html}/commit/${sha}` }, protected: name === defaultBranch() };
-  }));
+  })));
 } else if (r0 === 'pulls' && !rest[1]) {
   const state = q.get('state') || 'open';
   const list = pulls.filter((p) => state === 'all' || (state === 'open' ? p.state === 'open' : p.state !== 'open'));
-  out(list.map((p) => {
+  out(paged(list).map((p) => {
     let sha = null;
     try {
       sha = resolve(p.head);
@@ -94,10 +104,18 @@ if (!r0) {
   out((p.reviews || []).map((s, i) => ({ id: i + 1, state: s, user: { login: `reviewer${i + 1}` } })));
 } else if (r0 === 'commits' && rest[2] === 'check-runs') {
   const sha = resolve(rest[1]);
-  const branch = gits('for-each-ref', '--points-at', sha, '--format=%(refname:short)', 'refs/heads').trim().split('\n')[0];
+  const branch = branchOf(sha);
   const p = pulls.find((x) => x.head === branch) || (fixtures.checks || {})[branch] && { checks: fixtures.checks[branch] };
   const runs = (p?.checks || []).map((c, i) => ({ id: i + 1, name: c.name, status: c.status || 'completed', conclusion: c.status && c.status !== 'completed' ? null : c.conclusion || 'success', head_sha: sha, html_url: `${html}/actions/runs/${1000 + i}` }));
   out({ total_count: runs.length, check_runs: runs });
+} else if (r0 === 'commits' && rest[2] === 'status') {
+  // combined commit status (Statuses API)
+  const sha = resolve(rest[1]);
+  const branch = branchOf(sha);
+  const list = pulls.find((x) => x.head === branch)?.statuses || (fixtures.statuses || {})[branch] || [];
+  const statuses = list.map((x, i) => ({ id: i + 1, context: x.context, state: x.state || 'success', description: x.description || '', target_url: `${html}/statuses/${i + 1}` }));
+  const state = !statuses.length ? 'pending' : statuses.some((x) => x.state === 'failure' || x.state === 'error') ? 'failure' : statuses.every((x) => x.state === 'success') ? 'success' : 'pending';
+  out({ state, sha, total_count: statuses.length, statuses });
 } else if (r0 === 'commits' && !rest[1]) {
   const sha = resolve(q.get('sha') || defaultBranch());
   const n = Number(q.get('per_page') || 30);

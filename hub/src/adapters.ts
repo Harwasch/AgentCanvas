@@ -138,10 +138,18 @@ export const GitHubAdapter = {
   },
   api: (endpoint: string, raw = false) => ['api', endpoint, ...(raw ? ['-H', 'Accept: application/vnd.github.raw'] : [])],
   repo: (o: string, r: string) => `repos/${o}/${r}`,
+  /** list endpoints are paged with page=N by GitHub.list (capped); per_page is the page size it checks for the last page */
   branches: (o: string, r: string) => `repos/${o}/${r}/branches?per_page=100`,
-  pulls: (o: string, r: string) => `repos/${o}/${r}/pulls?state=all&per_page=50&sort=updated&direction=desc`,
+  /** every open PR (paged), plus the most recently updated closed/merged ones (one page) for merged-state chips */
+  openPulls: (o: string, r: string) => `repos/${o}/${r}/pulls?state=open&per_page=100&sort=updated&direction=desc`,
+  recentClosedPulls: (o: string, r: string) => `repos/${o}/${r}/pulls?state=closed&per_page=50&sort=updated&direction=desc`,
+  page: (endpoint: string, n: number) => `${endpoint}${endpoint.includes('?') ? '&' : '?'}page=${n}`,
+  /** the page size an endpoint asks for (30 is GitHub's default) */
+  perPage: (endpoint: string) => Number(endpoint.match(/[?&]per_page=(\d+)/)?.[1] || 30),
   reviews: (o: string, r: string, n: number) => `repos/${o}/${r}/pulls/${n}/reviews?per_page=100`,
   checkRuns: (o: string, r: string, sha: string) => `repos/${o}/${r}/commits/${sha}/check-runs?per_page=100`,
+  /** combined commit status (the older Statuses API: external CI, deploy bots) */
+  combinedStatus: (o: string, r: string, sha: string) => `repos/${o}/${r}/commits/${sha}/status?per_page=100`,
   commits: (o: string, r: string, ref: string, n = 8, path?: string) => `repos/${o}/${r}/commits?sha=${encodeURIComponent(ref)}&per_page=${n}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
   compare: (o: string, r: string, base: string, head: string) => `repos/${o}/${r}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
   tree: (o: string, r: string, ref: string) => `repos/${o}/${r}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
@@ -151,10 +159,13 @@ export const GitHubAdapter = {
     if (p.state === 'open') return p.draft ? 'draft' : 'open';
     return 'closed';
   },
-  ciState(runs: { status: string; conclusion: string | null }[]): { state: 'success' | 'failure' | 'pending' | 'none'; total: number; passed: number; failed: number } {
-    const total = runs.length;
-    const passed = runs.filter((r) => r.status === 'completed' && ['success', 'neutral', 'skipped'].includes(String(r.conclusion))).length;
-    const failed = runs.filter((r) => r.status === 'completed' && ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'].includes(String(r.conclusion))).length;
+  /** CI rollup over check runs plus commit statuses (success/failure/error/pending). */
+  ciState(runs: { status: string; conclusion: string | null }[], statuses: { state: string }[] = []): { state: 'success' | 'failure' | 'pending' | 'none'; total: number; passed: number; failed: number } {
+    const total = runs.length + statuses.length;
+    const passed = runs.filter((r) => r.status === 'completed' && ['success', 'neutral', 'skipped'].includes(String(r.conclusion))).length
+      + statuses.filter((x) => x.state === 'success').length;
+    const failed = runs.filter((r) => r.status === 'completed' && ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'].includes(String(r.conclusion))).length
+      + statuses.filter((x) => x.state === 'failure' || x.state === 'error').length;
     const state = !total ? 'none' : failed ? 'failure' : passed === total ? 'success' : 'pending';
     return { state, total, passed, failed };
   },

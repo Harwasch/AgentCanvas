@@ -10,8 +10,11 @@ Auth: cookie `hub_token` (HttpOnly, Secure, SameSite=Strict) or `Authorization: 
 Hook intake and MCP tool calls from hosts use separate, per-host tokens (see "Hosts → hub").
 
 ## Snapshot + event stream
-- `GET /api/state` → `{ seq, hosts[], accounts[], checkouts[], sessions[], approvals[] (pending only), nodes[] (app nodes), layout: {[nodeId]: {x,y,w,h,collapsed}}, config: { publicUrl, vapidPublicKey } }`
-- `WS /api/events?since=<seq>` (same origin, cookie auth) → each frame `{ seq, type, data, ts }`.
+- `GET /api/state` → `{ seq, boot, hosts[], accounts[], checkouts[], sessions[], approvals[] (pending only), nodes[] (app nodes), layout: {[nodeId]: {x,y,w,h,collapsed}}, config: { publicUrl, vapidPublicKey } }`
+- `WS /api/events?since=<seq>&boot=<boot>` (same origin, cookie auth) → each frame `{ seq, type, data, ts }`.
+  - The first frame is `{ seq: 0, type: "hello", data: { boot, seq, resync } }`. When `resync` is true (another hub run, or `since` is older than the replay ring), nothing is replayed, and the client reloads `/api/state`.
+  - Every 25 s the hub sends `{ seq: 0, type: "keepalive" }` plus a WebSocket ping, and closes clients that did not answer the previous ping.
+  - Messages are not in the snapshot: after every snapshot load, refetch `GET /api/sessions/:id/messages` for the transcripts on screen.
 
 | type | data |
 |---|---|
@@ -35,9 +38,11 @@ Checkout { id, host_id, path, repo_id, repoName, remote_url, branch, head, head_
 Session  { id, vendor: "claude"|"codex", kind: "local"|"cloud", host_id|null, account_id, checkout_id|null, cwd, branch,
            native_id, native_url, title, status: "starting"|"running"|"idle"|"waiting"|"ended"|"error"|"pending"|"ready"|"applied",
            last_event, model, effort, created_at, updated_at,
-           meta: { channel?: "connected"|"disconnected", tmux?: string, cloudStatus?: string, diffSummary?: string, environment?: string, attempts?: number } }
+           meta: { channel?: "connected"|"disconnected", tmux?: string, hostOffline?: boolean /* host unreachable: kept, retried when it is back */,
+                   cloudStatus?: string, diffSummary?: string, environment?: string, attempts?: number } }
 Message  { id, session_id, seq, role: "user"|"assistant"|"tool"|"system", kind: "text"|"tool"|"command"|"reasoning"|"status", text, data, created_at }
-Approval { id, session_id, source: "codex"|"claude-channel"|"claude-hook"|"app-confirm", title, detail, data, status: "pending"|"allow"|"deny"|"expired", created_at }
+Approval { id, session_id, source: "codex"|"claude-channel"|"claude-hook"|"app-confirm"|"canvas-action", title, detail,
+           data /* app-confirm and canvas-action: expiresAt (ms) */, status: "pending"|"allow"|"deny"|"expired", created_at }
 AppNode  { id, type: "app", appId, sessionId, hostId, dir, title, state: "preview"|"promoted", version, pinnedCommit, grantedVersion,
            status: "starting"|"running"|"stopped"|"error", errors: string[], url, thumbnail, updatedAt, previewOf|null,
            manifest: { id, title, version, lifecycle, tools: {[name]: {tier: "read"|"actuate", confirm, maxPerMinute}}, node: {width, height} } }
@@ -52,7 +57,9 @@ Audit    { id, ts, app_node_id, tool, tier, caller, args, allowed, reason, resul
 - `POST /api/sessions/:id/settings` `{ model?, effort? }`
 - `POST /api/sessions/:id/stop`
 - `POST /api/sessions/:id/refresh` (cloud: poll status now; codex cloud: fetch diff)
-- `POST /api/approvals/:id` `{ decision: "allow"|"deny"|"allowSession" }`
+- `POST /api/approvals/:id` `{ decision: "allow"|"deny"|"allowSession" }`. **409** `approval already <status>` when it was decided or expired.
+  **409** `no longer waiting: …` when nothing can act on the answer any more: the tool call or app call that asked has ended, Claude closed the held hook, the Codex connection that asked was lost, or the session ended. The approval is then marked `expired`.
+  **409** when the Claude channel is down; the approval stays pending, and you can answer in the terminal or the native app.
 - `GET  /api/checkouts/:id/files` → `{ files: {path, xy|null}[] }`; `GET /api/checkouts/:id/file?path=` → `{ path, content }`
 - `POST /api/checkouts/:id/refresh`
 - `POST /api/apps/publish` `{ hostId, dir, sessionId? }` → AppNode (repo-scan "unpublished app" path)
@@ -97,13 +104,14 @@ New event types (same `{seq,type,data,ts}` frames): `project.upsert`, `branch.up
 ## Shapes
 ```ts
 Project  { id /* repo id */, name, remoteUrl, gh: { owner, repo, account, url } | null, defaultBranch,
+           githubError: string | null /* last poll failed: branches, PRs, CI are the last known ones */, githubAt: number | null /* last good poll */,
            readme: string /* markdown, ≤ 20 KB */, stats: { files, commits, sizeMB, branches, sessions },
            folders: { name, mb }[], checkouts: string[], updatedAt }
 Branch   { id /* `${projectId}#${name}` */, projectId, name, base: string|null, goal: string|null, createdBy: "hub"|"agent"|"other",
            checkouts: string[] /* host worktrees on this branch */, head: string|null /* local head (first checkout) */,
            pushed: boolean, remoteSha: string|null, aheadRemote, behindRemote, aheadBase, behindBase,
            pr: { number, title, state: "open"|"draft"|"merged"|"closed", url, reviews: { approved, changesRequested, commented } } | null,
-           ci: { state: "success"|"failure"|"pending"|"none", total, passed, failed, url: string|null } | null,
+           ci: { state: "success"|"failure"|"pending"|"none", total, passed, failed, url: string|null } | null /* check runs + commit statuses */,
            commits: { sha, subject, author, at }[] /* last ≤ 8 on the branch */, apps: { path, id, title }[] /* found on the pushed branch */,
            cloud: { sessionId?: string } | null /* claude/* or codex result branches */, updatedAt }
 Machine  { id /* host id, or "claude-cloud" | "codex-cloud" */, label, kind: "host"|"cloud", color, status: "online"|"offline"|"managed",
@@ -182,5 +190,5 @@ Layout rows gain `size: {c?: [w,h], x?: [w,h]}` (user-resized, per collapsed/exp
 
 - **Hosts:** `GET /api/mcp/tools` (host token) lists the canvas tools for the channel script. Calls go through `POST /api/mcp/tools/:tool` like the other hub tools.
 - **Your own machines:** `POST /mcp` (bearer `mcpToken`) is a Streamable-HTTP MCP endpoint. It supports `initialize`, `tools/list`, `tools/call` and `ping`; notifications get 202, and responses are JSON (no SSE). `GET /mcp` returns 405. The `x-hub-client` header names the client in the audit log and the Undo pill.
-- **Confirm-tier calls** create an approval (`source: "canvas-action"`, `session_id` = the calling session or `mcp:external`) and block for up to 10 minutes. A denial or timeout returns `isError` to Claude.
+- **Confirm-tier calls** create an approval (`source: "canvas-action"`, `session_id` = the calling session or `mcp:external`, `data.expiresAt`) and block for up to 150 s, below the 180 s tool-call timeout of `hub_channel.py` and Codex. If the waiting HTTP request closes first, the approval is marked `expired` right away. A denial, expiry or timeout returns `isError` to Claude, and the action never runs.
 - **Audit:** every canvas tool call except the two reads is audited (`app_node_id: "canvas"`).

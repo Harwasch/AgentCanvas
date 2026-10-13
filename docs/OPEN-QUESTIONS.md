@@ -24,6 +24,11 @@ The stubs implement each of these as listed below. Every item needs checking aga
 14. **`PermissionRequest` held open.** When the channel is down the hub holds the hook response for up to 120 s (hook timeout 130 s). Verify that the real CLI waits, and that its terminal dialog stays usable meanwhile.
 15. **No `SessionStart` over HTTP.** It isn't supported (command hooks only). The hub detects "ready" from the tmux pane instead. If a ready signal is needed, add a command hook that runs `curl`.
 16. **Transcript path.** `$CLAUDE_CONFIG_DIR/projects/<cwd with non-alphanumerics → ->/<uuid>.jsonl`. Paths over 200 characters get an unknown hash suffix. The hub tails the computed path; the `transcript_path` from hooks would be more robust once confirmed.
+16a. **`SessionEnd` over HTTP.** The hub does not register a `SessionEnd` hook, because it is unknown whether real Claude Code runs `type: "http"` hooks for it (it does not for `SessionStart`), or whether it fires on `/exit`, Ctrl-C or a crash.
+    - The hub detects exits with tmux instead: `has-session` every `claudeLivenessIntervalSec`, and 1.5 s after the channel relay drops.
+    - If HTTP `SessionEnd` is confirmed, add it to `HOOK_EVENTS` in `bootstrap.ts`. `onHook` already ends the session on it.
+16b. **Held `PermissionRequest` and hook timeouts.** The hub assumes that when Claude gives up on a hook (after its 130 s timeout, or on exit), it closes the HTTP request; the hub then expires the approval. Verify that the real CLI closes the connection rather than leaving it open.
+16c. **`tmux has-session` exit codes.** The hub treats exit 1 as "no such session" (also "no server running") and anything else, including ssh's 255, as unknown. Verify on the hosts' tmux version.
 17. **Desktop visibility of daemon threads, and Claude Desktop for SSH sessions.** Untested: whether hub-started sessions appear in the Claude Desktop and mobile apps through Remote Control. Desktop's transcript location for SSH sessions is undocumented.
 18. **RISKY — `claude --cloud "task"` output format.** It is undocumented, and the stub prints a checklist plus `Session ID: session_…` and `View: https://claude.ai/code/session_…`. The parser takes the first `claude.ai/code/session_…` URL or `session_…` token anywhere in stdout and stderr (`ClaudeAdapter.parseCloudStart`).
 19. **`claude -p "msg" --cloud <id> --output-format json`.** The stub returns `{ok, session_id, url}`, as the docs describe.
@@ -68,6 +73,7 @@ The stubs implement each of these as listed below. Every item needs checking aga
     - `commits/{sha}/check-runs` (`status`, `conclusion`);
     - `commits?sha=&path=`, `compare/a...b` (`ahead_by`, `behind_by`), `git/trees?recursive=1`, and `contents` with `Accept: application/vnd.github.raw`.
     These are stable public API shapes, but the hub has only run them against the stub.
+40a. **Pagination and commit statuses.** Branch and PR lists are paged with `page=N`, stopping at a page shorter than `per_page`, not by following `Link` headers. CI also reads `commits/{sha}/status` (`statuses[].state`). Both are standard REST, but the hub has only run them against the stub. Verify on a repo with more than 100 branches and one that has external commit statuses.
 41. **Rate limits.** The hub polls every `githubPollIntervalSec` (default 60 s): per project, one call each for the repo, branches and PRs, plus per-branch calls for reviews, check runs and trees. Many projects or branches could hit the 5,000 requests/h limit; ETags and conditional requests are not used yet.
 42. **Multiple accounts.** `GH_CONFIG_DIR` per account assumes `gh auth login` was run once per directory on the hub. Org SSO authorization (company account) is untested.
 43. **Pushing new branches from hosts** uses the host's git credentials (an SSH key or the `gh` credential helper on that host). The hub doesn't provide them.

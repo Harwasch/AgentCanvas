@@ -146,7 +146,8 @@ cat > "$DATA/profiles/personal/gh/stub-github.json" <<'JSON'
 { "pulls": { "agent-hub-test/hexapod-robot": [
   { "number": 18, "title": "Winch console + bench tests", "state": "open", "draft": true, "head": "feat/winch-console", "base": "main",
     "reviews": ["COMMENTED", "APPROVED"],
-    "checks": [ { "name": "build", "conclusion": "success" }, { "name": "unit-tests", "conclusion": "success" }, { "name": "hil-sim", "status": "in_progress" } ] } ] } }
+    "checks": [ { "name": "build", "conclusion": "success" }, { "name": "unit-tests", "conclusion": "success" }, { "name": "hil-sim", "status": "in_progress" } ],
+    "statuses": [ { "context": "ci/bench-lint", "state": "success" } ] } ] } }
 JSON
 cat > "$DATA/profiles/work/gh/stub-github.json" <<'JSON'
 { "pulls": { "agent-hub-corp/wpt-charger": [
@@ -202,7 +203,8 @@ cat > "$REPO/config/hub.config.json" <<EOF
   "repoIndexIntervalSec": 30,
   "cloudPollIntervalSec": 3,
   "githubPollIntervalSec": 10,
-  "metricsIntervalSec": 5
+  "metricsIntervalSec": 5,
+  "claudeLivenessIntervalSec": 5
 }
 EOF
 chown "$HUB_USER" "$REPO/config/hub.config.json"

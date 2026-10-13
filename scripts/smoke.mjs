@@ -17,6 +17,8 @@ const SHOTS = path.join(ROOT, 'docs/screenshots');
 fs.mkdirSync(SHOTS, { recursive: true });
 const LOG = path.join(CFG.dataDir, 'smoke-hub.log');
 const results = [];
+// every `await check(` in this file must run: a run that stops early (or skips) fails
+const DEFINED = (fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').match(/^\s*await check\(/gm) || []).length;
 const t0 = Date.now();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const say = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s]`, ...a);
@@ -54,11 +56,25 @@ say('setting up test env (idempotent) and resetting state');
 execFileSync('bash', [path.join(ROOT, 'scripts/setup-test-env.sh')], { stdio: 'inherit' });
 execFileSync('bash', [path.join(ROOT, 'scripts/reset-test-env.sh')], { stdio: 'inherit' });
 const hubOut = fs.openSync(LOG, 'w');
-const hub = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'hub/dist/index.js'), path.join(ROOT, 'config/hub.config.json')], {
-  stdio: ['ignore', hubOut, hubOut],
-  env: { ...process.env, NODE_EXTRA_CA_CERTS: CFG.tls?.ca || '' },
-});
-process.on('exit', () => hub.kill());
+let hub;
+function spawnHub() {
+  hub = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'hub/dist/index.js'), path.join(ROOT, 'config/hub.config.json')], {
+    stdio: ['ignore', hubOut, hubOut],
+    env: { ...process.env, NODE_EXTRA_CA_CERTS: CFG.tls?.ca || '' },
+  });
+}
+spawnHub();
+process.on('exit', () => hub?.kill());
+/** stop the hub the way a service manager does (SIGTERM), then start it again */
+async function restartHub() {
+  const old = hub;
+  const gone = new Promise((r) => old.once('exit', r));
+  old.kill('SIGTERM');
+  await Promise.race([gone, sleep(10000)]);
+  if (old.exitCode === null) old.kill('SIGKILL');
+  spawnHub();
+  await until(async () => (await fetchish('GET', `${BASE}/healthz`)).status === 200, 'hub /healthz after restart', 20000);
+}
 const secrets = () => JSON.parse(fs.readFileSync(path.join(CFG.dataDir, 'secrets.json'), 'utf8'));
 // what the hub writes to a host's hub.env / a session's environment (HMAC of the hook secret)
 const hmac = (what) => crypto.createHmac('sha256', secrets().hookToken).update(what).digest('base64url');
@@ -113,9 +129,11 @@ await api('POST', '/api/push/subscribe', { subscription: { endpoint: 'https://lo
 const browser = await chromium.launch({ executablePath: CFG.screenshot.chromiumPath || undefined, args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 900 } });
 const page = await ctx.newPage();
+// browser console errors fail the run, except the ones a check provokes on purpose (allowlisted by that check)
 const consoleErrors = [];
-page.on('console', (m) => m.type() === 'error' && consoleErrors.push(m.text()));
-page.on('pageerror', (e) => consoleErrors.push(e.message));
+const expectedErrors = [];
+page.on('console', (m) => m.type() === 'error' && consoleErrors.push({ text: m.text(), url: m.location()?.url || '', at: Date.now() }));
+page.on('pageerror', (e) => consoleErrors.push({ text: e.message, url: '', at: Date.now() }));
 const T = (id) => page.locator(`[data-testid="${id}"]`);
 const sessionNode = (id) => page.locator(`[data-testid="session-node"][data-session-id="${id}"]`);
 const state = () => api('GET', '/api/state');
@@ -204,17 +222,32 @@ try {
     return 'replies rendered in both nodes';
   });
 
+  // pushes for approvals specifically (the hub's push log names each one; delivered = our fake push service took it)
+  const approvalPushes = new Set();
+  const approvalPushDelivered = (since) => until(async () => {
+    const hit = (await api('GET', '/api/push/log')).find((p) => p.title === 'Approval needed' && p.ts >= since && p.delivered > 0);
+    if (hit) approvalPushes.add(`${hit.ts}:${hit.body}`);
+    return hit;
+  }, 'web push for the approval delivered', 10000);
   await check('approve one tool call (Codex command approval, mini-1)', async () => {
+    const since = Date.now();
     const n = await chat(S.cx1.id, 'run the tests');
     await n.locator('[data-testid="approval-allow"]').first().waitFor({ timeout: 20000 });
+    const ap = (await state()).approvals.find((a) => a.session_id === S.cx1.id && a.status === 'pending');
+    if (ap?.source !== 'codex') throw new Error(`approval source ${ap?.source}`);
+    await approvalPushDelivered(since);
     await n.locator('[data-testid="approval-allow"]').first().click();
     await n.locator('[data-testid="msg"][data-role="assistant"]', { hasText: '2 passed' }).first().waitFor({ timeout: 20000 });
     return 'npm test approved in the hub → ran on the daemon';
   });
 
   await check('approve one tool call (Claude via channel permission relay, mini-2)', async () => {
+    const since = Date.now();
     const n = await chat(S.cc2.id, 'run the test suite');
     await n.locator('[data-testid="approval-allow"]').first().waitFor({ timeout: 20000 });
+    const ap = (await state()).approvals.find((a) => a.session_id === S.cc2.id && a.status === 'pending');
+    if (ap?.source !== 'claude-channel') throw new Error(`approval came through ${ap?.source ?? 'nothing'}, not the channel permission relay`);
+    await approvalPushDelivered(since);
     await n.locator('[data-testid="approval-allow"]').first().click();
     await n.locator('[data-testid="msg"][data-role="assistant"]', { hasText: 'Tests pass' }).first().waitFor({ timeout: 20000 });
     return 'Bash permission answered through claude/channel/permission';
@@ -301,6 +334,8 @@ try {
   }
 
   await check('preview blocks actuate (set_speed and stop) and audits the refusal', async () => {
+    // the two refusals answer 409, which Chromium logs as a failed resource load
+    expectedErrors.push((e) => /status of 409/.test(e.text) && e.url.includes(`/api/apps/${nodeId}/call`));
     await focusApp();
     await frame().locator('#speed').filter({ hasText: /\d/ }).waitFor({ timeout: 10000 });
     await frame().locator('#set').click();
@@ -357,7 +392,9 @@ try {
     const pr = await node.locator('[data-testid="branch-pr"]').innerText();
     const ci = await node.locator('[data-testid="branch-ci"]').innerText();
     if (!pr.includes('18')) throw new Error(`PR chip "${pr}"`);
-    if (!/pending|running|2\s*\/\s*3/i.test(ci)) throw new Error(`CI chip "${ci}"`);
+    if (!/pending|running|3\s*\/\s*4/i.test(ci)) throw new Error(`CI chip "${ci}"`);
+    // check runs (2 of 3 passed, 1 running) merged with the commit status (1 success)
+    if (br.ci.total !== 4 || br.ci.passed !== 3) throw new Error(`CI ${br.ci.passed}/${br.ci.total}: commit statuses not merged with check runs`);
     await page.locator(`[data-testid="project-node"][data-project-id="${P1}"]`).waitFor({ timeout: 5000 });
     await page.screenshot({ path: path.join(SHOTS, 'v2-project-branch.png') });
     return `PR #${br.pr.number} ${br.pr.state} (${br.pr.reviews.approved} approved), CI ${br.ci.state} ${br.ci.passed}/${br.ci.total}`;
@@ -656,11 +693,83 @@ try {
     return `approval ${ap.id} → ${s.id} on mini-2`;
   });
 
+  // ---- reliability: confirm expiry, reconnect, restart recovery, sessions that exit on their own
+  const mcpRequest = (name, args, client) => {
+    // a raw request we can drop mid-wait, like hub_channel.py timing out or Claude being stopped
+    const rq = https.request(`${BASE}/mcp`, { method: 'POST', agent, headers: { authorization: `Bearer ${secrets().mcpToken}`, 'content-type': 'application/json', 'x-hub-client': client } });
+    rq.on('error', () => {});
+    rq.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
+    return rq;
+  };
+  const pendingBy = (client) => until(async () => (await state()).approvals.find((a) => a.source === 'canvas-action' && a.status === 'pending' && a.data?.by === client), `pending approval from ${client}`, 10000);
+  const decideRaw = (id) => fetchish('POST', `${BASE}/api/approvals/${id}`, { decision: 'allow' }, { authorization: `Bearer ${secrets().hubToken}` });
+
+  await check('confirm-tier approval expires when the waiting caller disconnects (and a late Allow does nothing)', async () => {
+    const rq = mcpRequest('hub_open_terminal', { host: 'mini-1', cwd: '/tmp/smoke-disconnect' }, 'smoke-disconnect');
+    const ap = await pendingBy('smoke-disconnect');
+    const left = (ap.data.expiresAt - Date.now()) / 1000;
+    if (!(left > 100 && left <= 150)) throw new Error(`expires in ${left}s; must stay below the 180 s client timeout`);
+    rq.destroy();
+    await until(async () => !(await state()).approvals.some((a) => a.id === ap.id), 'approval no longer pending', 10000);
+    const late = await decideRaw(ap.id);
+    if (late.status !== 409 || !/expired/.test(late.text)) throw new Error(`late Allow → ${late.status} ${late.text}`);
+    if ((await state()).cnodes.some((n) => n.type === 'terminal' && n.data.cwd === '/tmp/smoke-disconnect')) throw new Error('the abandoned action ran');
+    return `${ap.id}: expires in ${Math.round(left)} s; caller gone → expired; late Allow → 409`;
+  });
+
+  await check('PWA reconnect: a reply that arrived while the event socket was down shows in the open node', async () => {
+    const n = await openNode(S.cc1.id);
+    await page.evaluate(() => globalThis.__hubConn.pause());
+    await api('POST', `/api/sessions/${S.cc1.id}/send`, { text: 'are you there smoke-31' });
+    await until(async () => (await api('GET', `/api/sessions/${S.cc1.id}/messages`)).some((m) => m.role === 'assistant' && m.text.includes('smoke-31')), 'reply in the hub', 20000);
+    await sleep(500);
+    if (await n.locator('[data-testid="msg"]', { hasText: 'smoke-31' }).count()) throw new Error('the socket was not down');
+    await page.evaluate(() => globalThis.__hubConn.resume());
+    await n.locator('[data-testid="msg"][data-role="assistant"]', { hasText: 'smoke-31' }).first().waitFor({ timeout: 15000 });
+    return 'socket held closed, reply sent meanwhile, shown after reconnect without reopening the node';
+  });
+
+  await check('hub restart: Claude session reattached (not ended, lock kept), chat works in the open node, stale approvals expired', async () => {
+    const cc2 = (await state()).sessions.find((x) => x.id === S.cc2.id);
+    await api('POST', '/api/devices/mini-2:psu/lock', { sessionId: cc2.id });
+    const rq = mcpRequest('hub_open_terminal', { host: 'mini-2', cwd: '/tmp/smoke-restart' }, 'smoke-restart');
+    const ap = await pendingBy('smoke-restart');
+    const n = await openNode(cc2.id);
+    const down = Date.now();
+    await restartHub();
+    rq.destroy();
+    // while the hub was away the PWA's requests and socket failed: expected, for this window only
+    const up = Date.now() + 15000;
+    expectedErrors.push((e) => e.at >= down && e.at <= up && (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|WebSocket connection/.test(e.text)));
+    const s = await until(async () => (await state()).sessions.find((x) => x.id === cc2.id && x.meta.channel === 'connected'), 'channel reattached after restart', 30000);
+    if (s.status === 'ended') throw new Error('session ended by the restart');
+    // devices reappear after the hub's first probe of the host
+    const lock = (await until(async () => (await state()).devices.find((d) => d.id === 'mini-2:psu'), 'PSU device after restart', 20000)).lock;
+    if (lock?.sessionId !== cc2.id) throw new Error(`device lock lost across the restart (${JSON.stringify(lock)})`);
+    if ((await state()).approvals.some((a) => a.id === ap.id)) throw new Error('approval from the old process still pending');
+    const late = await decideRaw(ap.id);
+    if (late.status !== 409) throw new Error(`Allow on the orphaned approval → ${late.status}`);
+    await api('POST', `/api/sessions/${cc2.id}/send`, { text: 'still there after the restart smoke-55' });
+    await n.locator('[data-testid="msg"][data-role="assistant"]', { hasText: 'smoke-55' }).first().waitFor({ timeout: 30000 });
+    return `${cc2.id} ${s.status}, channel reconnected, lock kept; ${ap.id} expired (Allow → 409); reply shown in the open node`;
+  });
+
+  await check('a Claude session that exits on its own (/exit) is marked ended and gives back its device lock', async () => {
+    const cc2 = (await state()).sessions.find((x) => x.id === S.cc2.id);
+    const t0 = Date.now();
+    execFileSync('ssh', ['-i', CFG.ssh.identityFile, '-o', 'BatchMode=yes', 'hostb@localhost', `tmux send-keys -t '${cc2.meta.tmux}' -l /exit && tmux send-keys -t '${cc2.meta.tmux}' Enter`]);
+    const s = await until(async () => (await state()).sessions.find((x) => x.id === cc2.id && x.status === 'ended'), 'session ended', 30000, 500);
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    await until(async () => !(await state()).devices.find((d) => d.id === 'mini-2:psu')?.lock, 'lock released', 5000);
+    return `ended after ${secs} s (${s.last_event}); PSU lock released`;
+  });
+
   await check('web push sent for approvals (VAPID, aes128gcm)', async () => {
+    if (approvalPushes.size < 2) throw new Error(`approval pushes delivered: ${approvalPushes.size} (want the Codex and the Claude approval)`);
     if (!pushes.length) throw new Error('no push delivered to the subscription endpoint');
-    const p = pushes[0];
-    if (!/^vapid t=/.test(p.auth) || p.encoding !== 'aes128gcm') throw new Error(`unexpected push request ${JSON.stringify(p)}`);
-    return `${pushes.length} pushes`;
+    const bad = pushes.find((p) => !/^vapid t=/.test(p.auth) || p.encoding !== 'aes128gcm');
+    if (bad) throw new Error(`unexpected push request ${JSON.stringify(bad)}`);
+    return `${approvalPushes.size} approval pushes delivered (of ${pushes.length} pushes)`;
   });
 
   await page.locator('button', { hasText: /^Fit$/ }).first().click().catch(() => {});
@@ -688,8 +797,9 @@ try {
 }
 
 const failed = results.filter((r) => !r.ok);
+const unexpected = consoleErrors.filter((e) => !expectedErrors.some((f) => f(e)));
 console.log('\n' + results.map((r) => `${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : `\n      ${r.detail}`}`).join('\n'));
-if (consoleErrors.length) console.log(`\nbrowser console errors (${consoleErrors.length}):\n  ${[...new Set(consoleErrors)].slice(0, 10).join('\n  ')}`);
-fs.writeFileSync(path.join(SHOTS, 'smoke-result.json'), JSON.stringify({ at: new Date().toISOString(), results, consoleErrors: [...new Set(consoleErrors)] }, null, 2));
-console.log(`\n${results.length - failed.length}/${results.length} checks passed; hub log ${LOG}`);
-process.exit(failed.length || results.length < 25 ? 1 : 0);
+if (consoleErrors.length) console.log(`\nbrowser console errors (${consoleErrors.length}, ${unexpected.length} unexpected):\n  ${[...new Set(consoleErrors.map((e) => `${expectedErrors.some((f) => f(e)) ? '(expected) ' : ''}${e.text} ${e.url}`))].slice(0, 12).join('\n  ')}`);
+fs.writeFileSync(path.join(SHOTS, 'smoke-result.json'), JSON.stringify({ at: new Date().toISOString(), results, consoleErrors: [...new Set(consoleErrors.map((e) => e.text))], unexpectedConsoleErrors: unexpected.map((e) => `${e.text} ${e.url}`) }, null, 2));
+console.log(`\n${results.length - failed.length}/${DEFINED} checks passed${results.length < DEFINED ? ` (${DEFINED - results.length} did not run)` : ''}; hub log ${LOG}`);
+process.exit(failed.length || results.length < DEFINED || unexpected.length ? 1 : 0);

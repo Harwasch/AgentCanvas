@@ -1,6 +1,6 @@
 # Progress: Agent Hub v1
 
-Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 28/28). Unit tests: 47/47. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
+Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 34/34, about 2 minutes). Unit tests: 66/66. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
 
 ## What works (verified by the smoke test, stubs on two SSH "hosts")
 
@@ -65,6 +65,18 @@ Screenshots: `docs/screenshots/v2-*.png`.
 | Demo | The demo build has a mock assistant: arrange, layouts, focus, session summary note, notes, to-dos, Undo, and a confirm-tier session start. |
 
 Screenshot: `docs/screenshots/ask-claude.png`.
+
+## Reliability (verified by the smoke test and unit tests)
+
+| Area | Verified |
+|---|---|
+| Confirm expiry | A confirm-tier `/mcp` call shows `expires in` ≤ 150 s. When the caller disconnects, the approval turns `expired` at once, and a late Allow gets 409 and runs nothing. |
+| PWA reconnect | The event socket is held closed while an agent replies. On reconnect, the reply shows in the open node without reopening it. |
+| Hub restart | SIGTERM and start again. The Claude session is reattached: the channel reconnects, the status is not ended, and its device lock is kept. A canvas approval left pending is expired (Allow → 409). A message sent after the restart shows in the node that was open. |
+| Session exit | `/exit` typed into the Claude TUI: the session is marked ended within ~2 s (relay drop → tmux check; the periodic check is the fallback), and its device lock is released. |
+| Push | Pushes for the Codex and the channel approval are each delivered to the fake push service (matched by the hub's push log, not any push). |
+| Honesty | The run fails if fewer checks ran than are defined, or on any browser console error not allowlisted by the check that provokes it. |
+| Unit tests | Startup expiry of orphaned approvals; abort → expired; ssh failure keeps sessions while tmux "gone" ends them; scans touch the project only on change; GitHub errors keep branches/PR/CI; tree cache per sha; CI merges commit statuses; capped paging. |
 
 ## What remains
 

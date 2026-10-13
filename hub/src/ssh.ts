@@ -88,6 +88,7 @@ export class HostManager {
         clearTimeout(t);
         resolve({ code: -1, stdout, stderr: String(e) });
       });
+      p.stdin.on('error', (e) => L(`${hostId} stdin: ${e.message}`)); // EPIPE: the remote side exited before reading
       if (opts.input != null) p.stdin.end(opts.input);
       else p.stdin.end();
     });
@@ -115,6 +116,7 @@ export class HostManager {
       });
       p.stderr.on('data', (d) => (stderr += d));
       const t = setTimeout(() => p.kill('SIGKILL'), opts.timeoutMs ?? 30000);
+      p.on('error', (e) => (stderr += String(e)));
       p.on('close', (code) => {
         clearTimeout(t);
         resolve({ code: n > max ? -2 : code ?? -1, stdout: Buffer.concat(chunks), stderr: n > max ? `output larger than ${max} bytes` : stderr });
@@ -125,13 +127,20 @@ export class HostManager {
   /** Remote command with a PTY allocated on the host (terminals). */
   spawnTty(hostId: string, cmd: string): ChildProcess {
     const h = this.host(hostId);
-    return spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-tt']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] });
+    return this.guard(hostId, spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-tt']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] }));
   }
 
   /** Long-lived remote process with stdio pipes (codex proxy, channel relay, app servers, tail -F). */
   spawn(hostId: string, cmd: string): ChildProcess {
     const h = this.host(hostId);
-    return spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-T']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] });
+    return this.guard(hostId, spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-T']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] }));
+  }
+
+  /** A spawn failure or a write after the remote end closed (EPIPE) is logged, never thrown at the hub; 'close' still fires. */
+  private guard(hostId: string, p: ChildProcess): ChildProcess {
+    p.on('error', (e) => L(`${hostId} ssh: ${e.message}`));
+    for (const s of [p.stdin, p.stdout, p.stderr]) s?.on('error', (e) => L(`${hostId} ssh stream: ${e.message}`));
+    return p;
   }
 
   /** Copy content to a remote file (cat over the multiplexed connection; equivalent to scp). */
@@ -168,7 +177,7 @@ export class HostManager {
   stop() {
     for (const t of this.health.values()) clearInterval(t);
     for (const h of this.cfg.hosts) {
-      spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-O', 'exit'])], { stdio: 'ignore' });
+      spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-O', 'exit'])], { stdio: 'ignore' }).on('error', () => {});
     }
   }
 }

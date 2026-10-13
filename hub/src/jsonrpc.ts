@@ -93,7 +93,8 @@ export class JsonRpcPeer {
           if (this.closed) return;
           if (e instanceof RpcError) this.respondError(id, e.code, e.message, e.data);
           else this.respondError(id, -32603, String(e?.message || e));
-        });
+        })
+        .catch(() => {}); // the transport went away while answering
       return true;
     }
     if (msg.method) {
@@ -147,7 +148,12 @@ export class NdjsonDecoder {
         this.onBadLine(line, e as Error);
         continue;
       }
-      this.onMessage(m);
+      try {
+        this.onMessage(m);
+      } catch (e) {
+        // a handler choking on one message must not take the stream (or the hub) down
+        this.onBadLine(line, e as Error);
+      }
     }
   }
 }

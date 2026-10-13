@@ -76,7 +76,12 @@ export class CodexDriver {
       } catch {
         return;
       }
-      peer.handle(m);
+      try {
+        peer.handle(m);
+      } catch (e: any) {
+        // one unexpected notification shape must not take the hub down
+        L(`${cn.key}: error handling ${m?.method ?? `response ${m?.id}`}: ${e?.stack || e}`);
+      }
     });
     const closed = () => {
       if (!cn.up && !cn.peer) return;

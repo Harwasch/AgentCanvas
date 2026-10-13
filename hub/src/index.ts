@@ -126,6 +126,7 @@ export async function main() {
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const since = Number(u.searchParams.get('since') || 0);
+      ws.on('error', (e) => L(`events socket: ${e.message}`));
       for (const ev of bus.since(since)) ws.send(JSON.stringify(ev));
       const on = (ev: any) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(ev));
       bus.on('event', on);
@@ -172,6 +173,15 @@ export async function main() {
 }
 
 process.on('unhandledRejection', (e) => console.error('[hub] unhandled rejection', e));
+// a peer that went away mid-write (ssh child, socket) is not fatal; anything else is a bug: log and exit
+process.on('uncaughtException', (e: NodeJS.ErrnoException) => {
+  if (e?.code === 'EPIPE' || e?.code === 'ECONNRESET' || e?.code === 'ERR_STREAM_DESTROYED') {
+    console.error('[hub] ignored', e.code, e.message);
+    return;
+  }
+  console.error('[hub] uncaught exception', e);
+  process.exit(1);
+});
 main().catch((e) => {
   console.error(e);
   process.exit(1);

@@ -182,7 +182,11 @@ export class ClaudeDriver {
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
-        this.onTranscript(id, line);
+        try {
+          this.onTranscript(id, line);
+        } catch (e: any) {
+          L(`${id}: transcript line: ${e.message}`);
+        }
       }
     });
     p.on('close', () => {

@@ -176,7 +176,7 @@ cat > "$REPO/config/hub.config.json" <<EOF
         { "id": "stlink", "title": "ST-LINK V3SET (sim)", "kind": "Debug probe · SWD 24 MHz", "icon": "SWD", "port": "/dev/ttyACM0 (simulated)", "fw": "probe fw V3J15", "probe": "test -e ~/.sim/stlink" },
         { "id": "leg-pcba", "parentId": "stlink", "title": "Leg actuator PCBA rev A (sim)", "kind": "STM32G474 · bench rig #1", "icon": "DUT", "port": "via ST-LINK", "probe": "test -e ~/.sim/stlink" },
         { "id": "pcan", "title": "PCAN-USB FD (sim)", "kind": "USB-CAN interface", "icon": "CAN", "port": "can0 · 1 Mbit/s", "probe": "test -e ~/.sim/pcan" },
-        { "id": "winch", "title": "Winch drive (simulated)", "kind": "served by apps/winch-console", "icon": "SER", "port": "stdio sim", "probe": "pgrep -f 'winch-console/serve[r].py' >/dev/null" }
+        { "id": "winch", "title": "Winch drive (simulated)", "kind": "served by apps/winch-console", "icon": "SER", "port": "stdio sim", "probe": "pgrep -fx 'python3 server[.]py' >/dev/null" }
       ],
       "hil": [
         { "id": "actuator-vv", "title": "Actuator V&V · T-01…T-12", "command": "$STUBS/lib/sim-hil.sh", "cwd": "~", "devices": ["stlink", "pcan", "leg-pcba"],

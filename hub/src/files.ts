@@ -91,7 +91,7 @@ export class FileService {
     if (src.kind === 'checkout') {
       const co = this.co(src.checkoutId);
       const p = q(co.path);
-      const r = await this.c.hosts.execOk(co.host_id, `cd ${p} && test -f ${q(path)} || { echo missing; exit 0; }; st=$(git status --porcelain -- ${q(path)}); if [ -n "$st" ]; then echo "worktree $(git hash-object ${q(path)})"; else git log -1 --format='%H%x1f%s%x1f%ct' -- ${q(path)}; echo; git rev-parse HEAD:${q(path)} 2>/dev/null; fi`);
+      const r = await this.c.hosts.execOk(co.host_id, `cd ${p} && test -f ${q(path)} || { echo missing; exit 0; }; st=$(git status --porcelain -- ${q(path)}); if [ -n "$st" ]; then echo "worktree $(git hash-object ${q(path)})"; else git log -1 --format='%H%x1f%s%x1f%ct' -- ${q(path)}; git rev-parse HEAD:${q(path)} 2>/dev/null; fi`);
       const lines = r.trim().split('\n');
       if (lines[0] === 'missing') throw new Error(`no such file ${path}`);
       if (lines[0].startsWith('worktree ')) return { sha: 'worktree', blob: lines[0].slice(9) };

@@ -1,88 +1,154 @@
 {
-  "at": "2026-10-13T00:40:16.586Z",
+  "at": "2026-10-13T01:50:21.216Z",
   "results": [
     {
       "name": "PWA loads over HTTPS (login, manifest, service worker)",
       "ok": true,
-      "ms": 191,
+      "ms": 253,
       "detail": "manifest \"Agent Hub\", SW /sw.js"
     },
     {
       "name": "hosts online and repos indexed",
       "ok": true,
-      "ms": 7,
+      "ms": 5,
       "detail": "mini-1:hexapod-robot@feat/winch-console, mini-2:wpt-charger@feat/coil-sweep"
     },
     {
       "name": "start Codex thread + Claude session on each host from the hub",
       "ok": true,
-      "ms": 5001,
-      "detail": "codex 01a132b3…/01a132b3…, claude session_01UaE9, session_01O8WY"
+      "ms": 5798,
+      "detail": "codex 01a132f2…/01a132f2…, claude session_013lNP, session_01489Z"
     },
     {
       "name": "chat from the canvas (Claude mini-1 and Codex mini-2)",
       "ok": true,
-      "ms": 3720,
+      "ms": 2835,
       "detail": "replies rendered in both nodes"
     },
     {
       "name": "approve one tool call (Codex command approval, mini-1)",
       "ok": true,
-      "ms": 2166,
+      "ms": 1831,
       "detail": "npm test approved in the hub → ran on the daemon"
     },
     {
       "name": "approve one tool call (Claude via channel permission relay, mini-2)",
       "ok": true,
-      "ms": 3188,
+      "ms": 3311,
       "detail": "Bash permission answered through claude/channel/permission"
     },
     {
       "name": "interrupt one turn (Claude mini-2 and Codex mini-1)",
       "ok": true,
-      "ms": 8041,
+      "ms": 9326,
       "detail": "Escape via tmux (Claude), turn/interrupt (Codex)"
     },
     {
       "name": "repo panel shows branch, HEAD and dirty state",
       "ok": true,
-      "ms": 167,
-      "detail": "feat/winch-console · @ fbb46cf · Initial import of hexapod-robot · 32m ago · 1 dirty"
+      "ms": 266,
+      "detail": "feat/winch-console · @ dbf6e02 · Initial import of hexapod-robot · 38m ago · 1 dirty"
     },
     {
       "name": "spawn Claude cloud session + Codex cloud task; status on canvas",
       "ok": true,
-      "ms": 7357,
-      "detail": "https://claude.ai/code/session_012WrrkDvZlX0l3ZcOL6ICls (idle), task_e_104f0411073… (ready, +2/-0 · 1 files)"
+      "ms": 9156,
+      "detail": "https://claude.ai/code/session_01mhAgCVD2VD9oMcYJzL48xE (idle), task_e_ba73c334eb1… (ready, +2/-0 · 1 files)"
     },
     {
       "name": "winch console: publish_app from the agent, node renders beside its session, screenshot returned",
       "ok": true,
-      "ms": 4303,
-      "detail": "app-0b7963a824 preview v1, \"node app-0b7963a824 (winch-console v1) published · tier: read-only (preview)\""
+      "ms": 4695,
+      "detail": "app-196f6b0b6b preview v1, \"node app-196f6b0b6b (winch-console v1) published · tier: read-only (preview)\""
     },
     {
       "name": "preview blocks actuate (set_speed and stop) and audits the refusal",
       "ok": true,
-      "ms": 1163,
+      "ms": 1328,
       "detail": "2 refusals audited"
     },
     {
       "name": "Promote (review → commit & pin → grant actuate), then confirm + audit",
       "ok": true,
-      "ms": 2035,
-      "detail": "pinned c99f31eb, set_speed allowed after confirm (actuate, confirmed), stop unconfirmed"
+      "ms": 2250,
+      "detail": "pinned ff20ef95, set_speed allowed after confirm (actuate, confirmed), stop unconfirmed"
+    },
+    {
+      "name": "project + branch nodes with GitHub PR and CI (gh)",
+      "ok": true,
+      "ms": 917,
+      "detail": "PR #18 draft (1 approved), CI pending 2/3"
+    },
+    {
+      "name": "new branch from the canvas → worktree on mini-1, pushed, branch node appears",
+      "ok": true,
+      "ms": 2736,
+      "detail": "mini-1:/home/hosta/code/hexapod-robot.worktrees/feat-smoke-branch · pushed"
+    },
+    {
+      "name": "any file as a node: quick open → image and markdown nodes render",
+      "ok": true,
+      "ms": 2532,
+      "detail": "image @ dbf6e02b, doc from GitHub @ dbf6e02b"
+    },
+    {
+      "name": "pinned file shows \"Newer version\" after a commit; Get latest re-pins",
+      "ok": true,
+      "ms": 3269,
+      "detail": "dbf6e02b → newer commit detected → re-pinned"
+    },
+    {
+      "name": "note and to-do list nodes (create, edit, toggle, dispatch to an agent)",
+      "ok": true,
+      "ms": 2634,
+      "detail": "note saved, to-do toggled, dispatched to cx-9713bf8fb990"
+    },
+    {
+      "name": "agent-created review, suggestion and to-do; review decision goes back to the agent; suggestion launches",
+      "ok": true,
+      "ms": 4361,
+      "detail": "review → changes requested (with comment) delivered; suggestion → cc-d65b63440fe6"
+    },
+    {
+      "name": "compute cluster: machines with live metrics, devices with locks",
+      "ok": true,
+      "ms": 934,
+      "detail": "mini-2 cpu 56.6% · NVIDIA RTX A5000 (simulated) 7920/24564 MB; PCAN lock assigned + released"
+    },
+    {
+      "name": "HIL run: locks the plan devices, streams rows, 11 pass / 1 fail, re-run failed",
+      "ok": true,
+      "ms": 6524,
+      "detail": "11/12 pass (T-07 overshoot); re-run of T-07 → failed"
+    },
+    {
+      "name": "compute grant: agent requests, you approve on the grant node, agent runs on the host",
+      "ok": true,
+      "ms": 833,
+      "detail": "grant grant-70bfc819 approved; run_on_host → hostb"
+    },
+    {
+      "name": "terminal node: real shell over SSH (tmux), typed command echoes",
+      "ok": true,
+      "ms": 3562,
+      "detail": "smoke-42 hostb"
+    },
+    {
+      "name": "scan pushed branches: Claude cloud result branch + app found on it",
+      "ok": true,
+      "ms": 13273,
+      "detail": "claude/build-a-status-dashboard-app-f → apps apps/cloud-status, linked to ccc-ca7e0b7c4097"
     },
     {
       "name": "web push sent for approvals (VAPID, aes128gcm)",
       "ok": true,
       "ms": 0,
-      "detail": "8 pushes"
+      "detail": "16 pushes"
     },
     {
       "name": "phone layout 390×844",
       "ok": true,
-      "ms": 1830,
+      "ms": 2000,
       "detail": "no horizontal scroll"
     }
   ],

@@ -401,7 +401,7 @@ try {
     execFileSync('ssh', ['-i', CFG.ssh.identityFile, '-o', 'BatchMode=yes', 'hosta@localhost', 'cd code/hexapod-robot && echo "Updated by the smoke test." >> docs/architecture.md && git commit -qam "docs: architecture note" && git rev-parse HEAD']);
     await api('POST', `/api/checkouts/${encodeURIComponent(co1)}/refresh`);
     await focus(fnode.id);
-    const n = page.locator(`[data-testid="file-node"][data-node-id="${fnode.id}"]`);
+    const n = page.locator(`[data-testid="file-node"][data-node-id="${fnode.id}"]`).locator('xpath=..'); // pin chip sits above the node
     await n.locator('[data-testid="file-newer"]').waitFor({ timeout: 40000 });
     await n.locator('[data-testid="file-latest"]').click();
     await until(async () => (await state()).cnodes.find((x) => x.id === fnode.id && !x.data.newer && x.data.sha !== fnode.data.sha), 're-pinned', 15000);

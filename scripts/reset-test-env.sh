@@ -37,7 +37,12 @@ done
 for u in hosta hostb; do
   h="$(getent passwd "$u" | cut -d: -f6)"
   rm -rf "$h"/code/*.worktrees
-  for r in "$h"/code/*/; do sudo -u "$u" git -C "$r" worktree prune 2>/dev/null; sudo -u "$u" git -C "$r" fetch -q --prune origin 2>/dev/null; done
+  for r in "$h"/code/*/; do
+    sudo -u "$u" git -C "$r" worktree prune 2>/dev/null
+    sudo -u "$u" git -C "$r" fetch -q --prune origin 2>/dev/null
+    # drop local branches created by earlier runs (keep main + the seeded feature branch)
+    sudo -u "$u" git -C "$r" for-each-ref --format='%(refname:short)' refs/heads | grep -vxE 'main|feat/winch-console|feat/coil-sweep' | while read -r b; do sudo -u "$u" git -C "$r" branch -qD "$b"; done
+  done
   rm -f "$h/.sim/gpu-load"
 done
 rm -f "$DATA"/hub.sqlite*

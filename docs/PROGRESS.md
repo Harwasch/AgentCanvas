@@ -1,6 +1,6 @@
 # Progress: Agent Hub v1
 
-Status: **v1 is built and passes its smoke test against the stubs** (`node scripts/smoke.mjs` → 14/14). Unit tests: 38/38. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
+Status: **v1 and v2 (GitHub + every design node type) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 25/25). Unit tests: 45/45. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
 
 ## What works (verified by the smoke test, stubs on two SSH "hosts")
 
@@ -28,6 +28,23 @@ Also verified manually or by unit tests:
 
 Screenshots: `docs/screenshots/` (desktop 1440×900, phone 390×844, repo panel, cloud, app preview blocked, confirm dialog, audit) and `smoke-result.json`.
 
+## v2: GitHub and every node type (verified by the smoke test)
+
+| Area | Verified |
+|---|---|
+| GitHub via `gh` (stub) | A project node per repo shows the GH account, default branch, README, stats and folders. Branch nodes show PR #18 (draft, reviews) and CI (2/3 passing, 1 pending) from `gh api`, under the account that owns the repo. |
+| New branch | Created from the project node: a git worktree on mini-1, pushed to GitHub, then shown as a branch node. |
+| Pushed-branch scan | A Claude cloud session pushes `claude/build-a-status-dashboard…`. The scan finds it, links it to the session, and finds `apps/cloud-status` on it. |
+| Any file as a node | Quick open places nodes from a host checkout or a GitHub ref: image (decoded), markdown (rendered from GitHub), code, STL (three.js) and text. Nodes are pinned to the last commit that touched the path. After a commit the node shows "Newer version", and "Get latest" re-pins it. |
+| Note and to-dos | Create, edit, toggle; "dispatch" starts a Codex session with the to-do. |
+| Agent-created nodes | The stub agent writes a report and calls `request_review`, `suggest_followup` and `add_todo`. In the review node you tick the checklist, comment, and press Request changes; the decision and the comment arrive in the agent's chat. Launching the suggestion starts a session. |
+| Compute cluster | Machine nodes show live CPU, memory and load (plus a simulated GPU on mini-2), the agents on each host, and the devices attached. Device nodes come from config probes and serial/CAN discovery; a lock is assigned and released from the node. |
+| HIL | Run takes the plan's three device locks and streams 12 rows: 11 pass, T-07 fails. "Re-run failed" runs T-07 only, and the locks are released afterwards. |
+| Compute grant | An agent calls `request_compute`. `run_on_host` is refused until you press Approve on the grant node, then runs as `hostb`. |
+| Terminal | A real shell over SSH (tmux plus xterm.js): the typed `echo smoke-$((40+2)) $(whoami)` prints `smoke-42 hostb`. |
+
+Screenshots: `docs/screenshots/v2-*.png`.
+
 ## What remains
 
 **Gating against the real CLIs** (in order, from the architecture doc): see `docs/OPEN-QUESTIONS.md`. The riskiest items:
@@ -37,8 +54,8 @@ Screenshots: `docs/screenshots/` (desktop 1440×900, phone 390×844, repo panel,
 - delivery of cloud repo hooks, and which `session_id` they carry;
 - Codex daemon visibility in the ChatGPT desktop app.
 
-**Not built in v1:**
-- **GitHub API per account:** PR status, and repo scan of pushed branches for vendor-cloud apps. The indexer covers local checkouts only.
+**Not built:**
+- **GitHub actions:** creating or merging PRs, and issues (out of the requested v2 scope). The GitHub polling sends no ETags or conditional requests yet.
 - **Adopting sessions started outside the hub:**
   - listing Claude Desktop/CLI sessions from their transcripts on hosts;
   - "bring into hub" (`claude --resume <id> --remote-control`): the driver accepts a `resumeUuid`, but there is no UI;
@@ -50,6 +67,7 @@ Screenshots: `docs/screenshots/` (desktop 1440×900, phone 390×844, repo panel,
   - `runsOn` a host other than the one holding the files;
   - high-rate stream proxying.
 - **Usage meters:** the design's subscription-usage bars show session counts per account instead.
-- **Design features not carried over:** to-dos, docs/figures, terminals and the review queue. The hub's scope is sessions, repos and apps.
+- **Device locks:** they apply to hub-mediated actions only; the hub can't stop a process on the host from opening a device directly.
+- **Per-process GPU usage for grants:** a grant shows the host's total GPU memory used, not just the agent's processes.
 - **Hub administration UI:** hosts and accounts are added in `hub.config.json`, then the hub is restarted (see README).
 - **Push delivery to a real browser push service:** the subscription flow is wired in the PWA, but only a fake push endpoint was exercised in the VM.

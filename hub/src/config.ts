@@ -91,6 +91,8 @@ export interface HubConfig {
   metricsIntervalSec: number;
   /** auto-answer dev-channel warning / one-time Remote Control prompt in tmux */
   autoAnswerStartupPrompts: boolean;
+  /** serve plain HTTP on a non-loopback address with a non-https publicUrl (tokens and cookies in clear text) */
+  allowInsecureHttp?: boolean;
 }
 
 export interface Secrets {
@@ -152,8 +154,19 @@ export function loadConfig(file?: string): { config: HubConfig; file: string } {
     config.tls.cert = expandHome(config.tls.cert);
     config.tls.key = expandHome(config.tls.key);
   }
+  const insecure = insecureHttp(config);
+  if (insecure && !config.allowInsecureHttp)
+    throw new Error(`refusing to start: ${insecure}. Use tls, put the hub behind tailscale serve (https publicUrl, listen on 127.0.0.1), or set "allowInsecureHttp": true`);
+  if (insecure) console.warn(`[config] WARNING: ${insecure} ("allowInsecureHttp": true)`);
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   return { config, file: f };
+}
+
+/** Why this config would send the hub token in clear text over the network, or null. */
+export function insecureHttp(c: Pick<HubConfig, 'tls' | 'publicUrl' | 'listen'>): string | null {
+  if (c.tls || /^https:/i.test(c.publicUrl)) return null;
+  if (/^(127\.\d+\.\d+\.\d+|::1|localhost)$/i.test(c.listen.host)) return null;
+  return `plain HTTP on ${c.listen.host}:${c.listen.port} with publicUrl ${c.publicUrl}: the hub token and cookie would cross the network unencrypted`;
 }
 
 export function loadSecrets(dataDir: string): Secrets {

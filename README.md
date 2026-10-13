@@ -16,7 +16,7 @@ browser (PWA) ──Tailscale──▶ hub (one Node process + SQLite on an alwa
 - `apps/winch-console/`: the demo app, an MCP Apps server driving a simulated winch.
 - `docs/`: `API.md` (PWA↔hub contract), `DECISIONS.md`, `OPEN-QUESTIONS.md` (real-CLI behavior still to verify), `PROGRESS.md`, `screenshots/`.
 
-**Getting it running on your machines:** follow `docs/RUNBOOK.md`. It is a phase-by-phase bring-up with prompts to paste into Claude Code.
+**Getting it running on your machines:** hand `docs/RUNBOOK.md` to an agent on the hub machine. It is a phase-by-phase bring-up written for the agent, with clear checkpoints for the steps only you can do (logins, other machines, hardware).
 
 ## Build and test
 

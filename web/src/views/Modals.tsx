@@ -143,12 +143,26 @@ export function Toasts() {
 
 export function TokenPrompt() {
   const [tok, setTok] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  // POST, so the token never lands in the URL bar, history or logs
+  const submit = async () => {
+    if (!tok.trim()) return;
+    setErr(null);
+    try {
+      const r = await api.login(tok.trim());
+      if (r.ok) location.href = '/';
+      else setErr(r.status === 401 ? 'That token is not right.' : `Sign-in failed (${r.status})`);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0B0C0E', padding: 16 }}>
-      <form className="modal" style={{ width: 380 }} data-testid="token-prompt" onSubmit={(e) => { e.preventDefault(); if (tok.trim()) location.href = `/login?token=${encodeURIComponent(tok.trim())}`; }}>
+      <form className="modal" style={{ width: 380 }} data-testid="token-prompt" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><Icon name="logo" size={20} sw={1.6} /><span style={{ fontWeight: 600, fontSize: 15 }}>Agent Hub</span></div>
         <span style={{ fontSize: 12.5, color: '#A3A7AF', lineHeight: 1.45 }}>This browser is not signed in. Paste the hub token to continue.</span>
         <input className="in mono" type="password" autoFocus autoComplete="current-password" placeholder="hub token" value={tok} onChange={(e) => setTok(e.target.value)} style={{ height: 36 }} />
+        {err ? <span style={{ fontSize: 12, color: '#FFB3B6' }} data-testid="token-error">{err}</span> : null}
         <button className="b bp" style={{ height: 34, justifyContent: 'center' }} type="submit">Sign in</button>
       </form>
     </div>

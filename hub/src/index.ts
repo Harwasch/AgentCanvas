@@ -16,7 +16,7 @@ import { RepoIndexer } from './repos.js';
 import { AppService } from './apps/service.js';
 import { Push } from './push.js';
 import { routes } from './api.js';
-import { createServer, cookies, bearer, safeEqual, json, type Auth, type Req } from './http.js';
+import { createServer, cookies, bearer, safeEqual, json, hubOrigins, crossOriginReason, type Auth, type Req, type Res } from './http.js';
 import type { Ctx } from './ctx.js';
 import { ProjectService } from './projects.js';
 import { FileService } from './files.js';
@@ -74,21 +74,32 @@ export async function main() {
   };
   const router = routes(c);
   const secure = !!cfg.tls || cfg.publicUrl.startsWith('https:');
+  const cookie = (t: string) => `hub_token=${encodeURIComponent(t)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${secure ? '; Secure' : ''}`;
+  // GET stays for the documented bookmarklet / first-run link; the PWA posts the token instead (no token in URLs or history)
   router.get('/login', 'none', (req, res) => {
     const t = req.query.get('token') || '';
     if (!safeEqual(t, secrets.hubToken)) return json(res, 401, { error: 'bad token' });
-    res.writeHead(302, { location: '/', 'set-cookie': `hub_token=${encodeURIComponent(t)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${secure ? '; Secure' : ''}` });
+    res.writeHead(302, { location: '/', 'set-cookie': cookie(t), 'referrer-policy': 'no-referrer' });
     res.end();
   });
+  router.post('/login', 'none', (req: Req, res: Res) => {
+    const t = String(req.body?.token || '');
+    if (!safeEqual(t, secrets.hubToken)) return json(res, 401, { error: 'bad token' });
+    if (/json/.test(String(req.headers['content-type']))) return json(res, 200, { ok: true }, { 'set-cookie': cookie(t) });
+    res.writeHead(303, { location: '/', 'set-cookie': cookie(t) });
+    res.end();
+  }, { form: true });
   router.get('/healthz', 'none', () => ({ ok: true }));
 
   const staticRoot = path.resolve(HERE, '../../web/dist');
   if (!fs.existsSync(staticRoot)) L(`warning: ${staticRoot} missing; run npm run build`);
-  const server = createServer({ cfg, router, authCheck, staticRoot });
+  const origins = hubOrigins(cfg);
+  const server = createServer({ cfg, router, authCheck, origins, staticRoot });
 
   // event stream
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
+    socket.on('error', (e) => L(`upgrade socket: ${e.message}`));
     const u = new URL(req.url || '/', 'http://x');
     const tok = cookies(req).hub_token ?? u.searchParams.get('token') ?? '';
     const term = u.pathname.match(/^\/api\/terminals\/([\w-]+)\/ws$/);
@@ -96,13 +107,14 @@ export async function main() {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
     }
-    // terminals: same-origin only (the cookie is SameSite=Strict; this also refuses cross-site socket hijacking)
+    // same-origin only: SameSite=Strict still sends the cookie from same-site origins (other ports, sibling hosts)
+    const why = crossOriginReason(req.headers, origins);
+    if (why) {
+      L(`refused ${u.pathname} upgrade: ${why}`);
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      return;
+    }
     if (term) {
-      const origin = req.headers.origin;
-      if (origin && origin !== new URL(cfg.publicUrl).origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
-        return;
-      }
       wss.handleUpgrade(req, socket, head, (ws) => c.terminals.attach(term[1], ws));
       return;
     }

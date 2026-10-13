@@ -12,6 +12,8 @@ export interface Req extends http.IncomingMessage {
   pathname: string;
   body?: any;
   rawBody?: Buffer;
+  /** host whose token authenticated a 'hook' request */
+  authHost?: string;
 }
 export type Res = http.ServerResponse;
 export type Handler = (req: Req, res: Res) => Promise<any> | any;
@@ -28,12 +30,14 @@ interface Route {
   keys: string[];
   h: Handler;
   auth: Auth;
+  /** also accept an application/x-www-form-urlencoded body (parsed into req.body) */
+  form?: boolean;
 }
 export type Auth = 'hub' | 'hook' | 'cloudHook' | 'mcp' | 'none';
 
 export class Router {
   routes: Route[] = [];
-  add(method: string, pattern: string, auth: Auth, h: Handler) {
+  add(method: string, pattern: string, auth: Auth, h: Handler, o: { form?: boolean } = {}) {
     const keys: string[] = [];
     const re = new RegExp(
       '^' + pattern.replace(/\/:([a-zA-Z_]+)(\*)?/g, (_m, k, star) => {
@@ -41,10 +45,10 @@ export class Router {
         return star ? '/(.+)' : '/([^/]+)';
       }) + '/?$',
     );
-    this.routes.push({ method, re, keys, h, auth });
+    this.routes.push({ method, re, keys, h, auth, form: o.form });
   }
   get(p: string, auth: Auth, h: Handler) { this.add('GET', p, auth, h); }
-  post(p: string, auth: Auth, h: Handler) { this.add('POST', p, auth, h); }
+  post(p: string, auth: Auth, h: Handler, o: { form?: boolean } = {}) { this.add('POST', p, auth, h, o); }
   del(p: string, auth: Auth, h: Handler) { this.add('DELETE', p, auth, h); }
 }
 
@@ -93,6 +97,34 @@ export function bearer(req: http.IncomingMessage): string | undefined {
   return undefined;
 }
 
+/** Media type without parameters, lower-cased ("application/json; charset=utf-8" → "application/json"). */
+export function essence(ct: string | undefined): string {
+  return String(ct || '').split(';')[0].trim().toLowerCase();
+}
+
+/** Origins that are this hub: publicUrl, plus the listen address itself (same port) for local access. */
+export function hubOrigins(cfg: Pick<HubConfig, 'publicUrl' | 'listen' | 'tls'>): Set<string> {
+  const out = new Set<string>([new URL(cfg.publicUrl).origin]);
+  const proto = cfg.tls ? 'https' : new URL(cfg.publicUrl).protocol.replace(':', '');
+  const h = cfg.listen.host;
+  const names = ['0.0.0.0', '::', ''].includes(h) ? ['localhost', '127.0.0.1', '[::1]'] : [h.includes(':') ? `[${h}]` : h];
+  for (const n of names) out.add(new URL(`${proto}://${n}:${cfg.listen.port}`).origin);
+  return out;
+}
+
+/**
+ * Cross-origin guard for cookie-authenticated requests and socket upgrades: SameSite=Strict
+ * still lets same-site origins (other localhost ports, sibling hosts) send the cookie.
+ * Returns why the request is refused, or null.
+ */
+export function crossOriginReason(headers: http.IncomingHttpHeaders, allowed: Set<string>): string | null {
+  const origin = headers.origin;
+  if (origin !== undefined && !allowed.has(String(origin))) return `origin ${origin} is not this hub`;
+  const site = headers['sec-fetch-site'];
+  if (site !== undefined && site !== 'same-origin' && site !== 'none') return `cross-site request (${site})`;
+  return null;
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json',
@@ -126,11 +158,14 @@ export interface ServerDeps {
   cfg: HubConfig;
   router: Router;
   authCheck: (auth: Auth, req: Req) => boolean;
+  /** origins accepted on cookie-authenticated requests (default: hubOrigins(cfg)) */
+  origins?: Set<string>;
   staticRoot?: string;
   onUnauthedPage?: (req: Req, res: Res) => boolean;
 }
 
 export function createServer(d: ServerDeps) {
+  const origins = d.origins ?? hubOrigins(d.cfg);
   const handler = async (rq: http.IncomingMessage, res: Res) => {
     const req = rq as Req;
     const u = new URL(req.url || '/', 'http://x');
@@ -145,16 +180,24 @@ export function createServer(d: ServerDeps) {
         req.params = {};
         r.keys.forEach((k, i) => (req.params[k] = decodeURIComponent(m[i + 1])));
         if (!d.authCheck(r.auth, req)) throw new HttpError(401, 'unauthorized');
+        // the cookie is ambient: refuse it from anywhere but the hub's own pages (bearer callers are unaffected)
+        if ((r.auth === 'hub' && !bearer(req)) || r.form) {
+          const why = crossOriginReason(req.headers, origins);
+          if (why) throw new HttpError(403, why);
+        }
         if (req.method === 'POST' || req.method === 'PUT') {
           req.rawBody = await readBody(req);
-          const ct = req.headers['content-type'] || '';
-          if (req.rawBody.length && ct.includes('json')) {
+          const ct = essence(req.headers['content-type']);
+          if (!req.rawBody.length) req.body = {};
+          else if (ct === 'application/json') {
             try {
               req.body = JSON.parse(req.rawBody.toString('utf8'));
             } catch {
               throw new HttpError(400, 'invalid json');
             }
-          } else req.body = {};
+          } else if (r.form && ct === 'application/x-www-form-urlencoded') {
+            req.body = Object.fromEntries(new URLSearchParams(req.rawBody.toString('utf8')));
+          } else throw new HttpError(415, 'body must be application/json');
         }
         const out = await r.h(req, res);
         if (!res.headersSent && out !== undefined) json(res, 200, out);

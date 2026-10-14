@@ -55,3 +55,10 @@ test('startup prompts: real 2.1.296 dialogs map to the safe keys', () => {
 test('remote control URL from the real banner', () => {
   assert.equal(ClaudeAdapter.parseRemoteControlUrl(realIdle), 'https://claude.ai/code/session_01LA4pVxWCEVDss5xVekwYnN');
 });
+
+test('model switch confirmation (2.1.296) is recognised and is not the idle prompt', () => {
+  const pane = [RULE, '  Switch model?', '  Your next response will be slower and use more tokens', '  ❯ 1. Yes, switch to Sonnet 5.5', '    2. No, go back'].join('\n');
+  assert.ok(ClaudeAdapter.modelConfirm.re.test(pane));
+  assert.deepEqual(ClaudeAdapter.modelConfirm.keys, ['Enter']);
+  assert.equal(ClaudeAdapter.isReady(pane), false);
+});

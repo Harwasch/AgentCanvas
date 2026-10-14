@@ -33,6 +33,8 @@ export const ClaudeAdapter = {
   },
   interruptKeys: ['Escape'],
   modelKeys: (m: string) => `/model ${m}`,
+  /** 2.1.29x: `/model` mid-conversation asks to confirm (cache re-read); "Yes, switch" is preselected */
+  modelConfirm: { re: /Switch model\?/, keys: ['Enter'] },
   effortKeys: (e: string) => `/effort ${e}`,
   /** Prompts shown once per host/profile that the hub answers through tmux. */
   startupPrompts: [

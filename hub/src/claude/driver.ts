@@ -273,7 +273,18 @@ export class ClaudeDriver {
 
   async settings(id: string, o: { model?: string; effort?: string }) {
     const s = this.need(id);
-    if (o.model) await this.typeLine(s, ClaudeAdapter.modelKeys(o.model));
+    if (o.model) {
+      await this.typeLine(s, ClaudeAdapter.modelKeys(o.model));
+      for (let i = 0; i < 6; i++) {
+        await sleep(500);
+        const tail = (await this.pane(s)).replace(/\s+$/, '').split('\n').slice(-12).join('\n');
+        if (ClaudeAdapter.modelConfirm.re.test(tail)) {
+          await this.keys(s, ...ClaudeAdapter.modelConfirm.keys);
+          break;
+        }
+        if (ClaudeAdapter.isReady(tail)) break;
+      }
+    }
     if (o.effort) await this.typeLine(s, ClaudeAdapter.effortKeys(o.effort));
     this.c.store.upsertSession({ id, model: o.model ?? s.model, effort: o.effort ?? s.effort });
   }

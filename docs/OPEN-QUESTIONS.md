@@ -114,3 +114,12 @@ Claude Code 2.1.296 on `mini-1` (Ubuntu 26.04), 2026-10-13.
 - **#49** VERIFIED. Claude quotes the server `instructions` verbatim.
 - **#51** VERIFIED. Hub-served canvas and hub tools are listed at startup alongside the script's own tools (31 in total).
 - Live session recovery: a hub restart reattaches the channel of a running session.
+
+## Round-1 additions
+
+52. **Claude usage endpoint:** `GET https://api.anthropic.com/api/oauth/usage` with the claude.ai OAuth access token from `<hub profile>/.credentials.json` and `anthropic-beta: oauth-2025-04-20`. The hub expects `{five_hour, seven_day, seven_day_opus?: {utilization, resets_at}}`. This is undocumented, and the token refresh is left to the CLI. To verify on the hub: the shape, and what happens when the token has expired (the chip should say so, not break).
+53. **Codex `account/rateLimits/read`:** the hub expects `{rateLimits: {primary, secondary: {usedPercent, windowDurationMins, resetsAt}}}` and the `account/rateLimits/updated` notification. The stub implements both. To verify against the real app-server.
+54. **Real TUI ready line.** If readiness isn't recognised within 30 s but claude is still running, the hub now keeps the session and logs the pane tail ("ready prompt not recognised").
+    - With a selection dialog open, it doesn't type the first prompt into the dialog: it waits for you.
+    - Copy any logged tail into `ClaudeAdapter.isReady` (see #9).
+

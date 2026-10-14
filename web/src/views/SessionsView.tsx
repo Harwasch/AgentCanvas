@@ -49,13 +49,14 @@ export function SessionsView() {
                 const waiting = s.status === 'waiting' || pending[s.id];
                 return (
                   <tr key={s.id} className={sessions[s.id] ? 'click' : undefined} data-testid="session-row" data-session-id={s.id} onClick={() => { if (sessions[s.id]) focusNode(s.id, true); }} style={{ boxShadow: waiting ? 'inset 3px 0 0 #FFD23F' : undefined, opacity: sessions[s.id] ? 1 : 0.6 }}>
-                    <td><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><ProviderBadge vendor={s.vendor} /><span className="ell" style={{ maxWidth: 300, fontWeight: 500 }}>{s.title || '(untitled)'}</span></span></td>
+                    <td><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><ProviderBadge vendor={s.vendor} /><span className="ell" style={{ maxWidth: 300, fontWeight: 500 }}>{s.title || '(untitled)'}</span>{s.meta?.hidden ? <span style={{ fontSize: 10.5, color: '#8A8F98', border: '1px solid #2A2D33', borderRadius: 999, padding: '0 6px' }}>hidden</span> : null}</span></td>
                     <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}><span className="dot" style={{ background: computeColor(key, hosts) }} />{computeName(key, hosts)}</span></td>
                     <td style={{ color: '#C9CCD2' }}>{accounts[s.account_id]?.label || s.account_id}</td>
                     <td><span className="mono" style={{ fontSize: 11.5 }}>{co?.repoName || '—'}</span>{s.branch ? <span className="mono" style={{ fontSize: 11.5, color: '#8A8F98' }}> · {s.branch}</span> : null}</td>
                     <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12 }}><StatusPill status={waiting ? 'waiting' : s.status} onClick={() => focusNode(s.id, true)} /></span></td>
                     <td style={{ color: '#8A8F98', whiteSpace: 'nowrap' }}>{timeAgo(s.updated_at)}</td>
-                    <td>{s.native_url ? <a className="b lnk" style={{ height: 24, fontSize: 11.5 }} href={s.native_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>{nativeLabel(s)} ↗</a> : <span style={{ color: '#6E727A' }}>—</span>}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{s.meta?.hidden ? <button className="b" style={{ height: 24, fontSize: 11.5, marginRight: 6 }} data-testid="session-unhide"
+                      onClick={(e) => { e.stopPropagation(); api.sessionVisibility(s.id, false).catch((err) => toast(`Could not show it: ${err.message}`, 'error')); }}>Show on canvas</button> : null}{s.native_url ? <a className="b lnk" style={{ height: 24, fontSize: 11.5 }} href={s.native_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>{nativeLabel(s)} ↗</a> : <span style={{ color: '#6E727A' }}>—</span>}</td>
                   </tr>
                 );
               })}

@@ -14,7 +14,7 @@ import { log } from './events.js';
 
 const L = log('canvas');
 
-export interface CanvasCaller { kind: 'assistant' | 'agent' | 'external'; sessionId: string | null; label: string }
+export interface CanvasCaller { kind: 'assistant' | 'agent' | 'external' | 'user'; sessionId: string | null; label: string }
 export interface ViewNode { id: string; kind: string; title: string; parent: string | null; x: number; y: number; w: number; h: number; ex?: boolean }
 export interface ViewReport {
   at: number; mode: string; nodes: ViewNode[]; selected: string[]; focusId: string | null; visible?: { x: number; y: number; w: number; h: number } | null;
@@ -26,7 +26,8 @@ type Op =
   | { t: 'layout'; id: string; prev: Record<string, any> | null }
   | { t: 'created'; cnodeId: string }
   | { t: 'removed'; row: Record<string, any> }
-  | { t: 'todo'; todoId: string };
+  | { t: 'todo'; todoId: string }
+  | { t: 'hidden'; sessionId: string; prev: boolean };
 interface Batch { id: string; key: string; by: string; sessionId: string | null; ops: Op[]; ids: Set<string>; summary: string[]; at: number; undone: boolean }
 
 type Tier = 'free' | 'confirm';
@@ -66,6 +67,9 @@ const text = (t: string) => ({ type: 'text', text: t });
 const ok = (t: string, structured?: any): Result => ({ content: [text(t)], ...(structured ? { structuredContent: structured } : {}) });
 const fail = (t: string): Result => ({ isError: true, content: [text(t)] });
 const REMOVABLE = new Set(['note', 'file', 'todos']);
+/** what Delete in the PWA removes (undoably); terminals close for good; sessions are hidden, not deleted */
+const USER_REMOVABLE = new Set(['note', 'file', 'todos', 'suggest', 'htodo']);
+const YOU: CanvasCaller = { kind: 'user', sessionId: null, label: 'You' };
 const MERGE_MS = 8000;
 /** below the 180 s tool-call timeouts of hub_channel.py and Codex's tool_timeout_sec, so a late Allow never runs an abandoned call */
 export const CONFIRM_MS = 150_000;
@@ -128,10 +132,10 @@ export class CanvasService {
   }
 
   // ------------------------------------------------------------ batches + undo
-  private batch(caller: CanvasCaller): Batch {
+  private batch(caller: CanvasCaller, fresh = false): Batch {
     const key = `${caller.kind}:${caller.sessionId ?? caller.label}`;
     const last = this.batches[this.batches.length - 1];
-    if (last && last.key === key && !last.undone && Date.now() - last.at < MERGE_MS) { last.at = Date.now(); return last; }
+    if (!fresh && last && last.key === key && !last.undone && Date.now() - last.at < MERGE_MS) { last.at = Date.now(); return last; }
     const b: Batch = { id: newId('cb-'), key, by: caller.label, sessionId: caller.sessionId, ops: [], ids: new Set(), summary: [], at: Date.now(), undone: false };
     this.batches.push(b);
     if (this.batches.length > 50) this.batches.shift();
@@ -149,14 +153,16 @@ export class CanvasService {
     const b = this.batches.find((x) => x.id === batchId);
     if (!b) throw new Error('unknown change batch');
     if (b.undone) throw new Error('already undone');
+    const layoutOut: Record<string, any>[] = [];
     for (const op of [...b.ops].reverse()) {
       try {
         if (op.t === 'layout') {
           if (op.prev) this.c.db.upsert('layout', op.prev, 'node_id');
           else this.c.db.run('DELETE FROM layout WHERE node_id=?', op.id);
           const row = this.c.db.get('SELECT * FROM layout WHERE node_id=?', op.id);
-          this.c.bus.publish('layout.upsert', row ? { nodeId: op.id, ...layoutEntry(row) } : { nodeId: op.id, removed: true });
-        } else if (op.t === 'created') this.c.nodes.remove(op.cnodeId);
+          layoutOut.push(row ? { nodeId: op.id, ...layoutEntry(row) } : { nodeId: op.id, removed: true });
+        } else if (op.t === 'hidden') this.c.store.upsertSession({ id: op.sessionId, meta: { hidden: op.prev } });
+        else if (op.t === 'created') this.c.nodes.remove(op.cnodeId);
         else if (op.t === 'todo') this.c.nodes.removeTodo(op.todoId);
         else if (op.t === 'removed') {
           this.c.db.upsert('cnode', op.row);
@@ -166,6 +172,7 @@ export class CanvasService {
         L(`undo ${b.id}: ${e.message}`);
       }
     }
+    if (layoutOut.length) this.c.bus.publish('layout.bulk', { entries: layoutOut });
     b.undone = true;
     this.c.bus.publish('canvas.undone', { batchId: b.id, ids: [...b.ids] });
     this.audit('undo', 'user:you', { batchId: b.id, by: b.by }, true, '');
@@ -184,6 +191,76 @@ export class CanvasService {
     this.c.db.upsert('layout', row, 'node_id');
     const saved = this.c.db.get('SELECT * FROM layout WHERE node_id=?', id)!;
     this.c.bus.publish('layout.upsert', { nodeId: id, ...layoutEntry(saved) });
+  }
+
+  // ------------------------------------------------------------ your own edits from the PWA
+  /**
+   * Save many positions at once: freezing an auto layout into Custom on the first drag, or Tidy. One event for all.
+   * With `undoable`, the previous rows are kept in a batch and the PWA offers Undo.
+   */
+  bulkLayout(entries: { nodeId: string; x: number; y: number; w?: number | null; h?: number | null }[], opts: { undoable?: boolean; label?: string } = {}) {
+    const list = (Array.isArray(entries) ? entries : []).slice(0, 5000).filter((e) => e && typeof e.nodeId === 'string' && Number.isFinite(e.x) && Number.isFinite(e.y));
+    const b = opts.undoable ? this.batch(YOU, true) : null;
+    const out: Record<string, any>[] = [];
+    this.c.db.tx(() => {
+      for (const e of list) {
+        const prev = this.c.db.get('SELECT * FROM layout WHERE node_id=?', e.nodeId) ?? null;
+        if (b) b.ops.push({ t: 'layout', id: e.nodeId, prev: prev ? { ...prev } : null });
+        this.c.db.upsert('layout', { node_id: e.nodeId, x: Math.round(e.x), y: Math.round(e.y), w: e.w ?? prev?.w ?? null, h: e.h ?? prev?.h ?? null, collapsed: prev?.collapsed ?? 1 }, 'node_id');
+        out.push({ nodeId: e.nodeId, ...layoutEntry(this.c.db.get('SELECT * FROM layout WHERE node_id=?', e.nodeId)!) });
+      }
+    });
+    if (out.length) this.c.bus.publish('layout.bulk', { entries: out });
+    if (b && out.length) this.announce(b, opts.label || `moved ${out.length} nodes`, [], false);
+    return { saved: out.length, batchId: b?.id ?? null };
+  }
+
+  /** Delete / Backspace in the PWA: notes, files, to-do lists and links are removed, sessions hidden (optionally stopped), terminals closed. */
+  async userRemove(ids: string[], stop: boolean) {
+    const b = this.batch(YOU, true);
+    const removed: string[] = [], hidden: string[] = [], stopped: string[] = [], closed: string[] = [], refused: string[] = [];
+    for (const id of (Array.isArray(ids) ? ids : []).map(String).slice(0, 500)) {
+      const row = this.c.db.get('SELECT * FROM cnode WHERE id=?', id);
+      if (row && USER_REMOVABLE.has(row.type)) {
+        b.ops.push({ t: 'removed', row: { ...row } });
+        this.c.nodes.remove(id);
+        removed.push(id);
+        continue;
+      }
+      if (row && row.type === 'terminal') {
+        this.c.nodes.remove(id); // closes its tmux session: not undoable
+        closed.push(id);
+        continue;
+      }
+      const s = this.c.store.session(id);
+      if (s) {
+        const active = !['ended', 'error', 'applied'].includes(s.status);
+        if (stop && active) {
+          try {
+            if (s.kind === 'cloud') this.c.store.setStatus(s.id, 'ended', 'hidden in hub');
+            else if (s.vendor === 'claude') await this.c.claude.stop(s.id);
+            else await this.c.codex.stop(s.id);
+            stopped.push(id);
+          } catch (e: any) {
+            L(`stop ${id}: ${e.message}`);
+          }
+        }
+        b.ops.push({ t: 'hidden', sessionId: id, prev: !!s.meta?.hidden });
+        this.c.store.upsertSession({ id, meta: { hidden: true } });
+        hidden.push(id);
+        continue;
+      }
+      refused.push(id);
+    }
+    const parts = [
+      removed.length ? `removed ${removed.length} node${removed.length === 1 ? '' : 's'}` : '',
+      hidden.length ? `hid ${hidden.length} session${hidden.length === 1 ? '' : 's'}` : '',
+      stopped.length ? `stopped ${stopped.length}` : '',
+      closed.length ? `closed ${closed.length} terminal${closed.length === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    if (parts.length) this.announce(b, parts.join(' · '), []);
+    this.audit('delete', 'user:you', { removed, hidden, stopped, closed }, true, '');
+    return { batchId: parts.length ? b.id : null, removed, hidden, stopped, closed, refused };
   }
 
   // ------------------------------------------------------------ confirm tier

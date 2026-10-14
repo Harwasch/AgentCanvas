@@ -5,10 +5,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { ApprovalCard, MessageItem } from '../nodes/SessionNode';
-import { lsSet, toast, ui, useHub, useUI, watchMessages } from '../store';
+import { hub, lsSet, toast, ui, useHub, useUI, watchMessages } from '../store';
 import type { Message, Session } from '../types';
 import { Icon, ProviderBadge, StatusPill, isActive, useIsPhone } from '../ui';
 
+const hostLabel = (id: string) => hub.get().hosts[id]?.label || id;
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 
 /** the current canvas assistant: newest active Claude session with role=assistant (shared by all your devices) */
@@ -57,6 +58,8 @@ export function AskPanel() {
 
 function Panel({ phone }: { phone: boolean }) {
   const s = useAssistant();
+  const hosts = useHub((h) => h.hosts);
+  const accounts = useHub((h) => h.accounts);
   const where = useWhere();
   const msgs = useHub((h) => (s ? h.messages[s.id] : undefined));
   const approvalsMap = useHub((h) => h.approvals);
@@ -99,7 +102,7 @@ function Panel({ phone }: { phone: boolean }) {
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, color: '#8A8F98', flex: 'none' }}>
         {s ? (
-          <span className="ell">Claude on <b style={{ color: '#C9CCD2', fontWeight: 500 }}>{s.host_id}</b> · {s.account_id}{s.meta?.channel === 'connected' ? '' : ' · connecting…'}</span>
+          <span className="ell">Claude on <b style={{ color: '#C9CCD2', fontWeight: 500 }}>{hosts[s.host_id || '']?.label || s.host_id}</b> · {accounts[s.account_id]?.label || s.account_id}{s.meta?.channel === 'connected' ? '' : ' · connecting…'}</span>
         ) : (
           <>
             <span>Runs on</span>
@@ -200,7 +203,7 @@ export function AskBar() {
     close();
     try {
       await ask(t, s, where);
-      toast(s ? 'Sent to Claude' : `Starting Claude on ${where.host}…`);
+      toast(s ? 'Sent to Claude' : `Starting Claude on ${hub.get().hosts[where.host]?.label || where.host}…`);
     } catch (e) { toast(`Could not reach Claude: ${(e as Error).message}`, 'error'); ui.set({ askOpen: true }); }
   };
   return (
@@ -211,7 +214,7 @@ export function AskBar() {
           placeholder={nSel ? `Ask Claude about the ${nSel} selected node${nSel === 1 ? '' : 's'}…` : 'Ask Claude to do something on the canvas…'}
           onKeyDown={(e) => { if (e.key === 'Enter') void go(); if (e.key === 'Escape') close(); }}
           style={{ flex: 1, height: 36, fontSize: 14, border: 0, background: 'transparent' }} />
-        <span className="mono desk-only" style={{ fontSize: 10.5, color: '#6E727A' }}>{s ? `→ ${s.host_id}` : `starts on ${where.host || '—'}`}</span>
+        <span className="mono desk-only" style={{ fontSize: 10.5, color: '#6E727A' }}>{s ? `→ ${hostLabel(s.host_id || '')}` : `starts on ${where.host ? hostLabel(where.host) : '—'}`}</span>
         <button className="b ghost" style={{ height: 28 }} title="Open the conversation" onClick={() => { close(); ui.set({ askOpen: true }); lsSet('hub.askOpen', '1'); }}>Panel</button>
       </div>
     </div>

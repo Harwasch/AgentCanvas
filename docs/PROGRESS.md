@@ -1,6 +1,6 @@
 # Progress: Agent Hub v1
 
-Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 34/34, about 2 minutes). Unit tests: 78/78. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
+Status: **v1, v2 (GitHub + every design node type) and Ask Claude (canvas tools) are built and pass the smoke test against the stubs** (`node scripts/smoke.mjs` → 38/38, about 2 minutes). Unit tests: 80/80. A clean checkout runs `npm ci && npm run build && npm test` green. Nothing has run against the real `claude`/`codex` binaries yet; `docs/OPEN-QUESTIONS.md` lists what to verify first.
 
 ## What works (verified by the smoke test, stubs on two SSH "hosts")
 

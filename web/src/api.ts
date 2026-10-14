@@ -150,5 +150,8 @@ export const api = {
   /** keepalive: the report sent as the page is hidden (it may be unloading) */
   canvasView: (body: unknown, opts?: { keepalive?: boolean }) => call('POST', '/api/canvas/view', body, opts),
   canvasUndo: (batchId: string) => call('POST', `/api/canvas/undo/${enc(batchId)}`, {}),
+  canvasRemove: (ids: string[], stop: boolean) => call<{ batchId: string | null; removed: string[]; hidden: string[]; stopped: string[]; closed: string[]; refused: string[] }>('POST', '/api/canvas/remove', { ids, stop }),
+  layoutBulk: (entries: { nodeId: string; x: number; y: number; w?: number; h?: number }[], opts: { undoable?: boolean; label?: string } = {}) => call<{ saved: number; batchId: string | null }>('POST', '/api/layout/bulk', { entries, ...opts }),
+  sessionVisibility: (id: string, hidden: boolean) => call<Session>('POST', `/api/sessions/${enc(id)}/visibility`, { hidden }),
   closeTerminal: (id: string) => call('DELETE', `/api/terminals/${enc(id)}`),
 };

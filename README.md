@@ -55,11 +55,23 @@ The page runs the real PWA against the in-page mock hub (simulated hosts, agents
 | Zoom | Scroll wheel, pinch | Pinch |
 | Move a node (or the whole selection) | Drag it | Drag it |
 | Move a node with all of its child nodes | Shift-drag it | — |
-| Resize a node | Drag its bottom-right corner (double-click the corner to reset) | — |
+| Resize a node | Drag any corner (double-click a corner to reset) | — |
+| Delete selected nodes | Delete / Backspace. Notes, files and to-do lists are removed; sessions leave the canvas but keep running unless you choose "Stop & remove"; terminals close. Undo on the pill. Hidden sessions: Sessions tab → "Show on canvas". | — |
 | Add menu | Right-click (no drag) | — |
 | Clear the selection | Esc, or click empty canvas | Tap empty canvas |
 
-Layouts: **Cluster** (radial), **Columns** (top-down trees side by side), **Tree** (each group's tree runs left → right, groups stacked), **Custom** (your saved positions). Sizes you set apply in every layout; they are stored per node and per collapsed/expanded state.
+Layouts: **Cluster** (radial), **Columns** (top-down trees side by side), **Tree** (each group's tree runs left → right, groups stacked), **Custom** (your saved positions). Moving or corner-resizing a node in an auto layout freezes the whole layout as it is into Custom, so nothing else moves; **Tidy** (bottom bar, in Custom) lays everything out again with the layout you came from, and Undo reverts it. Sizes you set apply in every layout; they are stored per node and per collapsed/expanded state.
+
+## Subscription usage
+
+The chips at the top right show one entry per AI subscription (Claude or Codex, per account), each with its 5-hour and weekly limit used, as the vendor reports it. Hover a chip for the reset times. GitHub accounts are listed in the settings panel.
+
+- **Claude:** read every `usagePollIntervalSec` (default 300) from the endpoint the CLI's `/usage` uses, signed in as the hub's own profile for that account (`hub.claudeConfigDir`; log Claude in there once). No API key is involved. Set `adapters.claude.usageUrl` to `""` to turn it off.
+- **Codex:** read from the app-server (`account/rateLimits`) of any connected Codex daemon for that account. Until a Codex session has run on some host, the chip shows "—".
+
+## Host names
+
+Each host's `label` in `config/hub.config.json` is what the canvas shows, for example `"label": "HW Geekom"`. The `id` is only an internal key: keep it stable, because sessions refer to it. To rename a host, change only its `label` and restart the hub.
 
 ## Ask Claude (agentic canvas)
 

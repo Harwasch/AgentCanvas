@@ -202,3 +202,18 @@ Layout rows gain `size: {c?: [w,h], x?: [w,h]}` (user-resized, per collapsed/exp
 - **Your own machines:** `POST /mcp` (bearer `mcpToken`) is a Streamable-HTTP MCP endpoint. It supports `initialize`, `tools/list`, `tools/call` and `ping`; notifications get 202, and responses are JSON (no SSE). `GET /mcp` returns 405. The `x-hub-client` header names the client in the audit log and the Undo pill.
 - **Confirm-tier calls** create an approval (`source: "canvas-action"`, `session_id` = the calling session or `mcp:external`, `data.expiresAt`) and block for up to 150 s, below the 180 s tool-call timeout of `hub_channel.py` and Codex. If the waiting HTTP request closes first, the approval is marked `expired` right away. A denial, expiry or timeout returns `isError` to Claude, and the action never runs.
 - **Audit:** every canvas tool call except the two reads is audited (`app_node_id: "canvas"`).
+
+# Round-1 additions
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/canvas/remove` | `{ids, stop}` | `{batchId, removed, hidden, stopped, closed, refused}`. Notes, files, to-do lists and links are removed (undoable); sessions are hidden (`meta.hidden`, undoable) and stopped only with `stop`; terminals are closed. |
+| POST | `/api/layout/bulk` | `{entries: [{nodeId, x, y, w?, h?}], undoable?, label?}` | `{saved, batchId}`: one `layout.bulk` event. Undoable batches appear as a `canvas.changed` by "You". |
+| POST | `/api/sessions/:id/visibility` | `{hidden}` | Session |
+| POST | `/api/usage/refresh` | — | `Usage[]` |
+
+- **Events:**
+  - `layout.bulk {entries: [{nodeId, …layoutEntry} | {nodeId, removed: true}]}`;
+  - `usage.upsert {accountId, vendor, windows: [{label, usedPct, resetsAt, minutes}], plan, at, error?}`.
+- **Snapshot:** `usage: Usage[]`; `accounts[].github` lists the account's GitHub owners.
+

@@ -17,7 +17,14 @@ export interface Account {
   label: string;
   color: string;
   cloud: { claudeEnvironments: CloudEnv[]; codexEnvironments: CloudEnv[] };
+  /** GitHub users / orgs this account owns (its gh login) */
+  github?: string[];
 }
+
+/** One subscription rate-limit window (5 h, week…) as the vendor reports it. */
+export interface UsageWindow { label: string; usedPct: number; resetsAt: number | null; minutes?: number | null }
+/** Usage of one AI subscription: Claude or Codex for one account. */
+export interface Usage { accountId: string; vendor: 'claude' | 'codex'; windows: UsageWindow[]; plan?: string | null; at: number; error?: string }
 
 export interface CheckoutApp { dir: string; id: string; title: string; published: boolean; nodeId?: string }
 export interface Checkout {
@@ -62,6 +69,8 @@ export interface Session {
   updated_at: string | number;
   meta: {
     role?: 'assistant';
+    /** removed from the canvas with Delete (the session itself is untouched); Sessions tab: "Show on canvas" */
+    hidden?: boolean;
     channel?: 'connected' | 'disconnected';
     tmux?: string;
     cloudStatus?: string;
@@ -141,6 +150,7 @@ export interface Audit {
 export interface LayoutEntry { x: number; y: number; w?: number; h?: number; collapsed?: boolean; size?: { c?: [number, number] | null; x?: [number, number] | null } }
 
 export interface StateSnapshot {
+  usage?: Usage[];
   seq: number;
   /** changes on every hub start (the event seq restarts) */
   boot?: string;

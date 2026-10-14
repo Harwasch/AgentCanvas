@@ -1,6 +1,6 @@
 // Mock hub for `?mock=1`: fixture state + local simulation of the command API and
 // event stream. Loaded via dynamic import so it is split out of the main bundle.
-import { assistantStart, assistantTurn, canvasUndo, decideAction, reportView, type AsstCtx } from './mockAssistant';
+import { assistantStart, assistantTurn, bulkLayout, canvasUndo, decideAction, reportView, userRemove, type AsstCtx } from './mockAssistant';
 import winchHtml from '../../apps/winch-console/ui.html?raw';
 import type { ApiResponse } from './api';
 import { HEX, WPT, handleV2, makeTermSocket, mockRawUrl, startV2Ticks, v2Fixtures, type V2Ctx, type V2State } from './mockv2';
@@ -17,8 +17,8 @@ const hosts: Host[] = [
 ];
 
 const accounts: Account[] = [
-  { id: 'personal', label: 'Personal', color: '#6AA8FF', cloud: { claudeEnvironments: [{ id: 'default', label: 'Default' }], codexEnvironments: [{ id: 'env_hexapod', label: 'hexapod-ci' }] } },
-  { id: 'work', label: 'Work', color: '#E0896B', cloud: { claudeEnvironments: [{ id: 'default', label: 'Default' }, { id: 'gpu', label: 'GPU sandbox' }], codexEnvironments: [{ id: 'env_work', label: 'work-ci' }] } },
+  { id: 'personal', label: 'Personal', color: '#6AA8FF', github: ['me'], cloud: { claudeEnvironments: [{ id: 'default', label: 'Default' }], codexEnvironments: [{ id: 'env_hexapod', label: 'hexapod-ci' }] } },
+  { id: 'work', label: 'Work', color: '#E0896B', github: ['work'], cloud: { claudeEnvironments: [{ id: 'default', label: 'Default' }, { id: 'gpu', label: 'GPU sandbox' }], codexEnvironments: [{ id: 'env_work', label: 'work-ci' }] } },
 ];
 
 const checkouts: Checkout[] = [
@@ -188,6 +188,12 @@ const FILES: Record<string, Record<string, string>> = {
 const state: StateSnapshot & V2State & { messages: Record<string, Message[]>; audit: Audit[] } = {
   seq: 100,
   hosts, accounts, checkouts, sessions, approvals, nodes: makeNodes(), layout: {},
+  usage: [
+    { accountId: 'personal', vendor: 'claude', plan: 'max', at: Date.now(), windows: [{ label: '5h', usedPct: 42, resetsAt: Date.now() + 3 * 3600e3, minutes: 300 }, { label: 'week', usedPct: 18, resetsAt: Date.now() + 5 * 86400e3, minutes: 10080 }] },
+    { accountId: 'work', vendor: 'claude', plan: 'team', at: Date.now(), windows: [{ label: '5h', usedPct: 76, resetsAt: Date.now() + 1.2 * 3600e3, minutes: 300 }, { label: 'week', usedPct: 51, resetsAt: Date.now() + 2 * 86400e3, minutes: 10080 }] },
+    { accountId: 'personal', vendor: 'codex', plan: 'plus', at: Date.now(), windows: [{ label: '5h', usedPct: 37, resetsAt: Date.now() + 2 * 3600e3, minutes: 300 }, { label: 'week', usedPct: 12, resetsAt: Date.now() + 4 * 86400e3, minutes: 10080 }] },
+    { accountId: 'work', vendor: 'codex', plan: 'business', at: Date.now(), windows: [{ label: '5h', usedPct: 93, resetsAt: Date.now() + 0.4 * 3600e3, minutes: 300 }, { label: 'week', usedPct: 64, resetsAt: Date.now() + 3 * 86400e3, minutes: 10080 }] },
+  ],
   config: { publicUrl: location.origin, vapidPublicKey: '' },
   messages, audit: [],
   ...v2Fixtures(checkouts),
@@ -351,6 +357,13 @@ export async function handle(method: string, path: string, body?: any): Promise<
   if (method === 'POST' && p === '/api/assistant/start') return ok(assistantStart(asst, body));
   if (method === 'POST' && p === '/api/canvas/view') { reportView(body); return ok(); }
   if (method === 'POST' && (m = p.match(/^\/api\/canvas\/undo\/([^/]+)$/))) return canvasUndo(asst, m[1]);
+  if (method === 'POST' && p === '/api/canvas/remove') return userRemove(asst, body.ids || [], !!body.stop);
+  if (method === 'POST' && p === '/api/layout/bulk') return bulkLayout(asst, body.entries || [], { undoable: !!body.undoable, label: body.label });
+  if (method === 'POST' && (m = p.match(/^\/api\/sessions\/([^/]+)\/visibility$/))) {
+    const s = state.sessions.find((x) => x.id === m![1]);
+    if (!s) return err(404, { error: 'no such session' });
+    return ok(updSession(s.id, { meta: { ...s.meta, hidden: !!body.hidden } }));
+  }
 
   if ((m = p.match(/^\/api\/sessions\/([^/]+)\/(messages|send|interrupt|settings|stop|refresh)$/))) {
     const [, sid, act] = m;

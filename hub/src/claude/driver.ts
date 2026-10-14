@@ -64,7 +64,7 @@ export class ClaudeDriver {
     const tmux = hubId;
     const configDir = this.absConfigDir(info.home, o.accountId);
     const launch = ClaudeAdapter.launchCommand({
-      bin: this.c.hosts.bin(o.hostId, 'claude'), hubId, sessionUuid: uuid, rcName: `${hubId} · ${repo}`,
+      bin: this.c.hosts.bin(o.hostId, 'claude'), hubId, sessionUuid: uuid, rcName: ClaudeAdapter.rcName({ repo, branch: o.branch, prompt: o.prompt, title: o.title }),
       settingsFile: `${info.base}/claude-settings.json`, mcpConfigFile: `${info.base}/mcp.json`, resume: !!o.resumeUuid, model: o.model,
     });
     // the per-session secret goes through a 0600 file (never a command line); the shell sources and removes it
@@ -108,6 +108,7 @@ export class ClaudeDriver {
   private async afterLaunch(id: string, prompt?: string) {
     const answered = new Set<string>();
     let ready = false;
+    let lastTail = '';
     for (let i = 0; i < 60 && !ready; i++) {
       await sleep(500);
       const s = this.c.store.session(id)!;
@@ -119,6 +120,7 @@ export class ClaudeDriver {
       }
       if (/Not logged in|run \/login/i.test(pane)) throw new Error('claude is not logged in for this account on this host');
       const tail = pane.replace(/\s+$/, '').split('\n').slice(-12).join('\n'); // panes pad with blank lines
+      lastTail = tail;
       if (this.c.cfg.autoAnswerStartupPrompts)
         for (const p of ClaudeAdapter.startupPrompts)
           if (p.re.test(tail) && !answered.has(p.name)) {
@@ -128,12 +130,26 @@ export class ClaudeDriver {
           }
       const url = ClaudeAdapter.parseRemoteControlUrl(pane);
       if (url && s.native_url !== url) this.c.store.upsertSession({ id, native_url: url });
-      if (ClaudeAdapter.isReady(tail) || (i > 30 && !ClaudeAdapter.dialogOpen(tail) && !ClaudeAdapter.startupPrompts.some((p) => p.re.test(tail)))) ready = true;
+      // a startup prompt already answered may stay on screen (e.g. the dev-channel notice); an open dialog never counts as ready
+      if (ClaudeAdapter.isReady(tail) || (i > 30 && !ClaudeAdapter.dialogOpen(tail) && !ClaudeAdapter.startupPrompts.some((p) => p.re.test(tail) && !answered.has(p.name)))) ready = true;
     }
-    if (!ready) throw new Error('claude did not become ready within 30 s');
-    this.c.store.upsertSession({ id, status: prompt ? 'running' : 'idle', last_event: 'ready' });
+    if (!ready) {
+      // The TUI may look different from what ClaudeAdapter.isReady expects. If claude is still running (or the
+      // channel is up), keep the session and deliver the prompt anyway; log the pane so the pattern can be fixed.
+      const s = this.c.store.session(id)!;
+      const alive = await this.pane(s).then((p) => { lastTail = p.replace(/\s+$/, '').split('\n').slice(-12).join('\n'); return true; }, () => false);
+      if (!alive) throw new Error('claude exited during startup');
+      L(`${id}: ready prompt not recognised after 30 s; continuing. Pane tail:\n${lastTail.replace(/https?:\/\/\S+/g, '<url>')}`);
+      if (ClaudeAdapter.dialogOpen(lastTail)) {
+        // never type into an unknown dialog (Enter could pick "exit"): leave it to you, in the terminal or the Claude app
+        this.c.store.upsertSession({ id, status: 'waiting', last_event: 'a startup dialog is open: answer it in the session\'s terminal (agent pane), then send the prompt again' });
+        return;
+      }
+      this.c.store.upsertSession({ id, last_event: 'startup screen not recognised (see hub log); continuing' });
+    }
+    this.c.store.upsertSession({ id, status: prompt ? 'running' : 'idle', ...(ready ? { last_event: 'ready' } : {}) });
     // give the channel a moment to attach, then send the first prompt
-    for (let i = 0; i < 20 && !this.live.get(id)?.relayUp; i++) await sleep(250);
+    for (let i = 0; i < 40 && !this.live.get(id)?.relayUp; i++) await sleep(250);
     if (prompt) await this.send(id, prompt);
   }
 

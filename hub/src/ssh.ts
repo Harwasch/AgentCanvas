@@ -189,7 +189,8 @@ export class HostManager {
   /** Remote command with a PTY allocated on the host (terminals). */
   spawnTty(hostId: string, cmd: string): ChildProcess {
     const h = this.host(hostId);
-    return this.guard(hostId, spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-tt']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'] }));
+    // the remote pty takes its TERM from ours; the hub may run with none (systemd)
+    return this.guard(hostId, spawn(this.cfg.ssh.bin, [...this.sshArgs(h, ['-tt']), '--', cmd], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, TERM: 'xterm-256color' } }));
   }
 
   /** Long-lived remote process with stdio pipes (codex proxy, channel relay, app servers, tail -F). */

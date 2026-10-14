@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { api } from './api';
 import type {
   Account, AppNode, Approval, Audit, Branch, CNode, Checkout, Device, FileSource, Grant, HilPlan, HilRun, Host, HubEvent,
-  LayoutEntry, Machine, Message, Project, Session, StateSnapshot, Todo,
+  LayoutEntry, Machine, Message, Project, Session, StateSnapshot, Todo, Usage,
   CanvasChange,
 } from './types';
 
@@ -33,6 +33,8 @@ export function useStore<T extends object, R>(store: Store<T>, sel: (s: T) => R)
 // ---------- hub data ----------
 export interface HubData {
   ready: boolean;
+  /** subscription usage, keyed `${vendor}:${accountId}` */
+  usage: Record<string, Usage>;
   authRequired: boolean;
   error: string | null;
   connected: boolean;
@@ -86,6 +88,7 @@ export const norm = {
 };
 
 export const hub = createStore<HubData>({
+  usage: {},
   ready: false, authRequired: false, error: null, connected: false, seq: 0,
   hosts: {}, accounts: {}, checkouts: {}, sessions: {}, approvals: {}, nodes: {}, layout: {}, config: {},
   messages: {}, audit: [],
@@ -101,6 +104,7 @@ export function applySnapshot(s: StateSnapshot) {
     projects: byId(s.projects, norm.project), branches: byId(s.branches, norm.branch), machines: byId(s.machines, norm.machine), devices: byId(s.devices, norm.device),
     cnodes: byId(s.cnodes, norm.cnode), todos: byId(s.todos), grants: byId(s.grants),
     hilPlans: byId(s.hil?.plans, norm.plan), hilRuns: byId(s.hil?.runs, norm.run),
+    usage: Object.fromEntries((s.usage || []).map((u) => [`${u.vendor}:${u.accountId}`, u])),
   });
 }
 
@@ -230,7 +234,17 @@ export function applyEvent(ev: HubEvent) {
       hub.set({ seq, layout });
       break;
     }
+    case 'layout.bulk': {
+      const layout = { ...s.layout };
+      (d.entries || []).forEach(({ nodeId, removed, ...rest }: any) => {
+        if (removed) delete layout[nodeId];
+        else layout[nodeId] = { ...(layout[nodeId] || {}), ...rest };
+      });
+      hub.set({ seq, layout });
+      break;
+    }
     case 'canvas.changed': hub.set({ seq }); onCanvasChanged(d); break;
+    case 'usage.upsert': hub.set({ seq, usage: { ...s.usage, [`${d.vendor}:${d.accountId}`]: d } }); break;
     case 'canvas.undone': hub.set({ seq }); ui.set((u) => ({ changes: u.changes.map((c) => (c.batchId === d.batchId ? { ...c, undone: true } : c)) })); break;
     case 'canvas.ui': {
       hub.set({ seq });
@@ -290,6 +304,8 @@ export interface UIState {
   customBase: Exclude<LayoutMode, 'custom'>;
   changes: CanvasChange[];
   glow: Record<string, number>;
+  /** Delete with running sessions or terminals in the selection waits for this dialog */
+  deleteAsk: { ids: string[]; running: number; terminals: number; kept: number } | null;
 }
 export interface SpawnPreset { checkoutId?: string; branch?: string; prompt?: string; hostId?: string; title?: string }
 export interface QuickOpenReq { source?: FileSource; parentId?: string | null; scopeLabel?: string }
@@ -305,7 +321,7 @@ export const ui = createStore<UIState>({
   quickOpen: null, branchModal: null, reviewId: null, repoSource: null, addMenu: null,
   askOpen: lsGet('hub.askOpen') === '1', askBar: false,
   customBase: ((b) => (b === 'cluster' || b === 'tree' ? b : 'columns'))(lsGet('hub.customBase')),
-  changes: [], glow: {},
+  changes: [], glow: {}, deleteAsk: null,
 });
 
 /** Switch layout mode; entering Custom from an auto layout keeps that layout as the base. */

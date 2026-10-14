@@ -41,10 +41,13 @@ function nodeText(n: GNode): string {
   }
 }
 
+type Corner = 'nw' | 'ne' | 'sw' | 'se';
+const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se'];
+
 type NodeActs = {
   down: (e: React.PointerEvent, id: string) => void;
   ctx: (e: React.MouseEvent, id: string, kind: string) => void;
-  rzDown: (e: React.PointerEvent, id: string) => void;
+  rzDown: (e: React.PointerEvent, id: string, corner: Corner) => void;
   rzReset: (id: string) => void;
   reg: (id: string, el: HTMLDivElement | null) => void;
 };
@@ -100,11 +103,12 @@ const NodeWrap = memo(function NodeWrap({ id, kind, refId, x, y, w, h, op, ex, p
       {color ? <RunRing color={color} /> : null}
       {loud ? <span aria-hidden="true" className="loud" /> : null}
       <NodeView kind={kind} id={id} refId={refId} mode={ex ? 'expanded' : 'collapsed'} />
-      {!phone ? (
-        <div className="rz" data-testid="resize-handle" title="Drag to resize · double-click to reset" onPointerDown={(e) => acts.rzDown(e, id)} onDoubleClick={(e) => { e.stopPropagation(); acts.rzReset(id); }}>
+      {!phone ? CORNERS.map((c) => (
+        <div key={c} className={`rz rz-${c}`} data-testid={c === 'se' ? 'resize-handle' : `resize-${c}`} title="Drag to resize · double-click to reset"
+          onPointerDown={(e) => acts.rzDown(e, id, c)} onDoubleClick={(e) => { e.stopPropagation(); acts.rzReset(id); }}>
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M9 1L1 9M9 5L5 9" stroke="#8A8F98" strokeWidth="1.4" strokeLinecap="round" /></svg>
         </div>
-      ) : null}
+      )) : null}
     </div>
   );
 });
@@ -156,7 +160,7 @@ export function Canvas() {
   const [local, setLocal] = useState<Record<string, { x: number; y: number }>>({});
   // live drag / resize values sit in refs only (applied to the DOM directly); end() commits them to state once
   const dragRef = useRef<Record<string, { x: number; y: number }> | null>(null);
-  const resizingRef = useRef<{ id: string; w: number; h: number } | null>(null);
+  const resizingRef = useRef<{ id: string; x: number; y: number; w: number; h: number } | null>(null);
   useEffect(() => { setLocal({}); }, [mode]);
 
   const pos = useMemo(() => {
@@ -168,6 +172,16 @@ export function Canvas() {
   }, [auto, mode, G, saved, local]);
   const posRef = useRef(pos);
   posRef.current = pos;
+  const autoRef = useRef(auto);
+  autoRef.current = auto;
+
+  /** Custom only: lay everything out again with the auto layout underneath (undoable). */
+  const tidy = () => {
+    const base = ui.get().customBase;
+    const entries = Object.entries(autoRef.current.pos).map(([id, b]) => ({ nodeId: id, x: b.x, y: b.y, w: b.w, h: b.h }));
+    setLocal({});
+    api.layoutBulk(entries, { undoable: true, label: `tidied the layout (${base})` }).catch((err) => toast(`Tidy failed: ${err.message}`, 'error'));
+  };
 
   // ---- view report: tell the hub what this view shows, so Claude's canvas tools see the same positions and selection.
   // Debounced (camera moves too), skipped when unchanged, paused while the page is hidden; the hub prefers visible pages.
@@ -249,6 +263,9 @@ export function Canvas() {
       } else {
         if (worldRef.current) worldRef.current.style.transform = tf;
         if (gridRef.current) gridRef.current.style.transform = gtf;
+        // resize handles keep a usable on-screen size when zoomed out (set at rest only, not every zoom frame)
+        const hz = Math.min(6, Math.max(1, 1 / v.z)).toFixed(2);
+        if (worldRef.current && worldRef.current.style.getPropertyValue('--hz') !== hz) worldRef.current.style.setProperty('--hz', hz);
       }
       // below the live zoom the ring / halo animations stop (class only: no React render)
       worldRef.current?.classList.toggle('lowz', v.z < LIVE_ZOOM);
@@ -396,7 +413,8 @@ export function Canvas() {
     if (!b) return b;
     const d = dragRef.current?.[id];
     const r = resizingRef.current;
-    return { x: d ? d.x : b.x, y: d ? d.y : b.y, w: r && r.id === id ? r.w : b.w, h: r && r.id === id ? r.h : b.h };
+    if (r && r.id === id) return { x: r.x, y: r.y, w: r.w, h: r.h };
+    return { x: d ? d.x : b.x, y: d ? d.y : b.y, w: b.w, h: b.h };
   };
   const setGeom = (el: SVGElement, g: ReturnType<typeof edgeGeom>) => {
     if (!g || ('d' in g) !== (el.tagName === 'path')) { el.style.display = 'none'; return; }
@@ -421,7 +439,7 @@ export function Canvas() {
     });
     if (r) {
       const el = els.current.get(r.id);
-      if (el) { el.style.width = `${r.w}px`; el.style.height = `${r.h}px`; }
+      if (el) { el.style.left = `${r.x}px`; el.style.top = `${r.y}px`; el.style.width = `${r.w}px`; el.style.height = `${r.h}px`; }
     }
     const tree = ui.get().layoutMode === 'tree';
     liveEdges.current.forEach(({ from, to, copy }) => {
@@ -471,7 +489,7 @@ export function Canvas() {
     | { kind: 'pan'; sx: number; sy: number; vx: number; vy: number; moved: boolean; menu?: { x: number; y: number; parentId: string | null; kind?: string }; tap?: boolean }
     | { kind: 'marquee'; sx: number; sy: number; moved: boolean; base: Record<string, true> }
     | { kind: 'node'; id: string; sx: number; sy: number; moved: boolean; shift: boolean; origins: Record<string, { x: number; y: number }> }
-    | { kind: 'resize'; id: string; sx: number; sy: number; moved: boolean; ow: number; oh: number };
+    | { kind: 'resize'; id: string; corner: Corner; sx: number; sy: number; moved: boolean; ox: number; oy: number; ow: number; oh: number };
   const ptrs = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<Gest | null>(null);
   const pinch = useRef<null | { d: number; mx: number; my: number }>(null);
@@ -551,15 +569,15 @@ export function Canvas() {
     gesture.current = { kind: 'node', id: n.id, sx: p.x, sy: p.y, moved: false, shift: e.shiftKey, origins };
   };
 
-  /** pointerdown on a node's resize handle */
-  const onResizeDown = (e: React.PointerEvent, id: string) => {
+  /** pointerdown on one of a node's corner handles */
+  const onResizeDown = (e: React.PointerEvent, id: string, corner: Corner) => {
     e.stopPropagation();
     if (isMouse(e) && e.button !== 0) return;
     const p = capture(e);
     if (!p) return;
     const b = posRef.current[id];
     if (!b) return;
-    gesture.current = { kind: 'resize', id, sx: p.x, sy: p.y, moved: false, ow: b.w, oh: b.h };
+    gesture.current = { kind: 'resize', id, corner, sx: p.x, sy: p.y, moved: false, ox: b.x, oy: b.y, ow: b.w, oh: b.h };
   };
 
   const onMove = (e: React.PointerEvent) => {
@@ -593,7 +611,11 @@ export function Canvas() {
       applyLive();
     } else if (g.kind === 'resize') {
       if (first) { beginLive([g.id], 'resizing'); gestureBusy(true); }
-      resizingRef.current = { id: g.id, w: Math.max(160, Math.round(g.ow + dx / z)), h: Math.max(56, Math.round(g.oh + dy / z)) };
+      // the opposite corner stays put: dragging a west / north handle also moves the node's left / top edge
+      const east = g.corner[1] === 'e', north = g.corner[0] === 'n';
+      const w = Math.max(160, Math.round(east ? g.ow + dx / z : g.ow - dx / z));
+      const h = Math.max(56, Math.round(north ? g.oh - dy / z : g.oh + dy / z));
+      resizingRef.current = { id: g.id, x: east ? g.ox : g.ox + g.ow - w, y: north ? g.oy + g.oh - h : g.oy, w, h };
       applyLive();
     } else if (g.kind === 'marquee') {
       if (first) gestureBusy(true);
@@ -626,6 +648,21 @@ export function Canvas() {
     });
   };
 
+  /**
+   * First move in an auto layout: keep every node exactly where it is showing (saved in one request), then switch to
+   * Custom. Only what you dragged moves; nothing else reflows. Tidy re-runs the layout when you want it.
+   */
+  const freeze = (overrides: Record<string, { x: number; y: number }>) => {
+    const entries = Object.entries(posRef.current).map(([id, b]) => ({ nodeId: id, x: overrides[id]?.x ?? b.x, y: overrides[id]?.y ?? b.y, w: b.w, h: b.h }));
+    hub.set((s) => {
+      const layout = { ...s.layout };
+      entries.forEach((en) => { layout[en.nodeId] = { ...(layout[en.nodeId] || {}), x: en.x, y: en.y }; });
+      return { layout };
+    });
+    api.layoutBulk(entries).catch((err) => toast(`Could not save the layout: ${err.message}`, 'error'));
+    setLayoutMode('custom');
+  };
+
   const end = (e: React.PointerEvent) => {
     ptrs.current.delete(e.pointerId);
     try { vpRef.current?.releasePointerCapture(e.pointerId); } catch { /* */ }
@@ -647,9 +684,8 @@ export function Canvas() {
         // one commit; its layout effect drops the live transforms (settle)
         settlePending.current = true;
         setLocal((l) => ({ ...l, ...moved }));
-        saveLayout(moved);
-        // like Claude's moves: a position only sticks in Custom, which starts from the auto layout that is showing
-        if (ui.get().layoutMode !== 'custom') setLayoutMode('custom');
+        if (ui.get().layoutMode !== 'custom') freeze(moved);
+        else saveLayout(moved);
         return;
       }
       if (!g.moved) {
@@ -670,8 +706,10 @@ export function Canvas() {
       if (g.moved && r && b) {
         const key = ui.get().expanded[g.id] && !phone ? 'x' : 'c';
         settlePending.current = true;
-        setLocal((l) => ({ ...l, [g.id]: { x: b.x, y: b.y } }));
-        saveLayout({ [g.id]: { x: b.x, y: b.y, size: { [key]: [r.w, r.h] } } });
+        setLocal((l) => ({ ...l, [g.id]: { x: r.x, y: r.y } }));
+        // a west / north handle moved the node's corner: that position only sticks in Custom
+        if ((r.x !== b.x || r.y !== b.y) && ui.get().layoutMode !== 'custom') freeze({ [g.id]: { x: r.x, y: r.y } });
+        saveLayout({ [g.id]: { x: r.x, y: r.y, size: { [key]: [r.w, r.h] } } });
         return;
       }
     } else if (g.kind === 'pan') {
@@ -693,12 +731,20 @@ export function Canvas() {
     saveLayout({ [id]: { x: b.x, y: b.y, size: { [key]: null } } });
   };
 
-  // keyboard: Escape clears the selection
+  // keyboard: Escape clears the selection; Delete / Backspace removes the selected nodes
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || !Object.keys(ui.get().selected).length) return;
+      const del = e.key === 'Delete' || e.key === 'Backspace';
+      if ((e.key !== 'Escape' && !del) || !Object.keys(ui.get().selected).length) return;
       const t = e.target as HTMLElement | null;
       if (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable || t.closest?.('.xterm'))) return;
+      const u = ui.get();
+      if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu || u.askBar || u.deleteAsk) return;
+      if (del) {
+        e.preventDefault();
+        requestDelete(Object.keys(u.selected));
+        return;
+      }
       ui.set({ selected: {} });
     };
     window.addEventListener('keydown', onKey);
@@ -720,7 +766,7 @@ export function Canvas() {
   const acts = useMemo<NodeActs>(() => ({
     down: (e, id) => handlers.current.onNodeDown(e, id),
     ctx: (e, id, kind) => handlers.current.onCtx(e, id, kind),
-    rzDown: (e, id) => handlers.current.onResizeDown(e, id),
+    rzDown: (e, id, corner) => handlers.current.onResizeDown(e, id, corner),
     rzReset: (id) => handlers.current.resetSize(id),
     reg: (id, el) => { if (el) els.current.set(id, el); else els.current.delete(id); },
   }), []);
@@ -792,9 +838,67 @@ export function Canvas() {
           </div>
         ) : null}
       </div>
-      <BottomBar pos={pos} />
+      <BottomBar pos={pos} onTidy={tidy} />
+      <DeleteDialog />
       <ChangePill />
     </ViewportCtx.Provider>
+  );
+}
+
+// ---- Delete / Backspace
+const REMOVABLE_CNODES = new Set(['note', 'file', 'todos', 'suggest', 'htodo']);
+const isActiveSession = (st: string) => !['ended', 'error', 'applied'].includes(st);
+
+/** Notes, files, to-do lists and links are removed; sessions leave the canvas (stopped only if you say so); terminals close. */
+function requestDelete(ids: string[]) {
+  const h = hub.get();
+  const ok: string[] = [];
+  let running = 0, terminals = 0, kept = 0;
+  ids.forEach((id) => {
+    const c = h.cnodes[id];
+    if (c && (REMOVABLE_CNODES.has(c.type) || c.type === 'terminal')) { ok.push(id); if (c.type === 'terminal') terminals++; return; }
+    const s = h.sessions[id];
+    if (s) { ok.push(id); if (isActiveSession(s.status)) running++; return; }
+    kept++;
+  });
+  if (kept && !ok.length) { toast('Projects, branches, machines, devices and apps stay on the canvas'); return; }
+  if (running || terminals) { ui.set({ deleteAsk: { ids: ok, running, terminals, kept } }); return; }
+  void doDelete(ok, false, kept);
+}
+
+async function doDelete(ids: string[], stop: boolean, kept: number) {
+  ui.set({ selected: {}, deleteAsk: null });
+  try {
+    const r = await api.canvasRemove(ids, stop);
+    if (kept) toast(`${kept} node${kept === 1 ? '' : 's'} kept: projects, branches, machines, devices and apps can't be deleted`);
+    if (r.refused.length) toast(`${r.refused.length} couldn't be removed`, 'warn');
+  } catch (e) { toast(`Delete failed: ${(e as Error).message}`, 'error'); }
+}
+
+function DeleteDialog() {
+  const ask = useUI((u) => u.deleteAsk);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (ask) setTimeout(() => cancelRef.current?.focus(), 20); }, [ask]);
+  if (!ask) return null;
+  const close = () => ui.set({ deleteAsk: null });
+  const n = ask.ids.length;
+  return (
+    <div className="modal-back" onPointerDown={close}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Delete nodes" data-testid="delete-dialog" style={{ width: 460 }} onPointerDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => { if (e.key === 'Escape') close(); }}>
+        <span style={{ fontSize: 15, fontWeight: 600 }}>Remove {n} node{n === 1 ? '' : 's'} from the canvas?</span>
+        <span style={{ fontSize: 12.5, color: '#A3A7AF', lineHeight: 1.5 }}>
+          {ask.running ? <>{ask.running} session{ask.running === 1 ? ' is' : 's are'} still running. Removing hides {ask.running === 1 ? 'it' : 'them'} from the hub; {ask.running === 1 ? 'it keeps' : 'they keep'} running in Claude / Codex unless you stop {ask.running === 1 ? 'it' : 'them'}. </> : null}
+          {ask.terminals ? <>{ask.terminals} terminal{ask.terminals === 1 ? '' : 's'} will close (that part can't be undone). </> : null}
+          Everything else comes back with Undo.
+        </span>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          <button ref={cancelRef} className="b" style={{ height: 32 }} data-testid="delete-cancel" onClick={close}>Cancel</button>
+          {ask.running ? <button className="b" style={{ height: 32 }} data-testid="delete-keep" onClick={() => void doDelete(ask.ids, false, ask.kept)}>Remove, keep running</button> : null}
+          <button className="b bp" style={{ height: 32 }} data-testid="delete-confirm" onClick={() => void doDelete(ask.ids, !!ask.running, ask.kept)}>{ask.running ? 'Stop & remove' : 'Remove'}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -824,7 +928,9 @@ function ChangePill() {
   );
 }
 
-function BottomBar({ pos }: { pos: Record<string, Box> }) {
+function BottomBar({ pos, onTidy }: { pos: Record<string, Box>; onTidy: () => void }) {
+  const mode = useUI((u) => u.layoutMode);
+  const base = useUI((u) => u.customBase);
   const zoom = useView((v) => Math.round(v.z * 100));
   const hosts = useHub((h) => h.hosts);
   const sessions = useHub((h) => h.sessions);
@@ -844,6 +950,7 @@ function BottomBar({ pos }: { pos: Record<string, Box> }) {
         <span className="mono" data-testid="zoom-pct" style={{ fontSize: 11.5, width: 42, textAlign: 'center', color: '#C9CCD2' }}>{zoom}%</span>
         <button className="b ghost" aria-label="Zoom in" style={{ width: 28, padding: 0, justifyContent: 'center' }} onClick={() => zoomBy(1.2)}>+</button>
         <button className="b ghost" onClick={() => fitBox(bbox(pos), 40, 1)}>Fit</button>
+        {mode === 'custom' ? <button className="b ghost" data-testid="tidy" title={`Lay everything out again with the ${base} layout (undoable)`} onClick={onTidy}>Tidy</button> : null}
         <button className="b ghost" onClick={() => ui.set({ expanded: {}, focusId: null })}>Collapse all</button>
       </div>
       <div className="pill" role="group" aria-label="Filter by compute">

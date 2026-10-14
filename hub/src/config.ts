@@ -76,7 +76,8 @@ export interface HubConfig {
   tls: { cert: string; key: string; ca?: string } | null;
   dataDir: string;
   adapters: {
-    claude: { bin: string; cloudBin: string };
+    /** usageUrl: where Claude subscription usage is read (the endpoint behind /usage); empty string turns it off */
+    claude: { bin: string; cloudBin: string; usageUrl?: string };
     codex: { bin: string; cloudBin: string };
     gh: { bin: string };
   };
@@ -88,6 +89,10 @@ export interface HubConfig {
   push: { subject: string };
   repoIndexIntervalSec: number;
   cloudPollIntervalSec: number;
+  /** how often subscription usage (Claude and Codex rate-limit windows) is refreshed */
+  usagePollIntervalSec: number;
+  /** Codex threads already in a host's daemon are shown only if updated within this many days (older ones stay in Codex) */
+  codexImportDays: number;
   githubPollIntervalSec: number;
   metricsIntervalSec: number;
   /** how often the hub asks tmux whether each live Claude session still exists (catches /exit and crashes) */
@@ -126,7 +131,7 @@ const DEFAULTS: HubConfig = {
   tls: null,
   dataDir: '~/.agent-hub',
   adapters: {
-    claude: { bin: 'claude', cloudBin: 'claude' },
+    claude: { bin: 'claude', cloudBin: 'claude', usageUrl: 'https://api.anthropic.com/api/oauth/usage' },
     codex: { bin: 'codex', cloudBin: 'codex' },
     gh: { bin: 'gh' },
   },
@@ -137,6 +142,8 @@ const DEFAULTS: HubConfig = {
   push: { subject: 'mailto:hub@localhost' },
   repoIndexIntervalSec: 60,
   cloudPollIntervalSec: 15,
+  usagePollIntervalSec: 300,
+  codexImportDays: 3,
   githubPollIntervalSec: 60,
   metricsIntervalSec: 10,
   claudeLivenessIntervalSec: 60,

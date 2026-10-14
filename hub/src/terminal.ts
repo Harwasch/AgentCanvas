@@ -55,7 +55,10 @@ export class TerminalService {
     const { hostId, tmux } = n.data;
     const ttyFile = `$HOME/.agent-hub/run/${id}-${crypto.randomBytes(3).toString('hex')}.tty`;
     const t = this.tmux(hostId);
-    const proc = this.c.hosts.spawnTty(hostId, `tty > "${ttyFile}"; stty cols 120 rows 32; ${t} has-session -t ${q(tmux)} 2>/dev/null || ${t} new-session -d -s ${q(tmux)} -c ${rpath(n.data.cwd || '~')}; exec ${t} attach -t ${q(tmux)}`);
+    // The hub usually runs under systemd with no TERM, and ssh -tt passes the hub's TERM on: without one, tmux
+    // refuses to attach ("open terminal failed: terminal does not support clear"). xterm.js speaks xterm-256color.
+    const env = `export TERM=xterm-256color; [ -n "$LANG" ] || export LANG=C.UTF-8;`;
+    const proc = this.c.hosts.spawnTty(hostId, `${env} tty > "${ttyFile}"; stty cols 120 rows 32; ${t} has-session -t ${q(tmux)} 2>/dev/null || ${t} new-session -d -s ${q(tmux)} -c ${rpath(n.data.cwd || '~')}; exec ${t} -u attach -t ${q(tmux)}`);
     const write = (d: string | Buffer) => {
       if (proc.stdin?.writable) proc.stdin.write(d);
     };

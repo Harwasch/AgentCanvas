@@ -117,6 +117,19 @@ export class Db {
   run(q: string, ...p: any[]) {
     return this.stmt(q).run(...p);
   }
+  /** Run f inside one transaction (all-or-nothing, and one fsync for many writes). */
+  tx<T>(f: () => T): T {
+    this.sql.exec('BEGIN');
+    try {
+      const out = f();
+      this.sql.exec('COMMIT');
+      return out;
+    } catch (e) {
+      this.sql.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
   /** INSERT OR REPLACE-style upsert that only touches the provided columns. */
   upsert(table: string, row: Row, key = 'id') {
     const cols = Object.keys(row);

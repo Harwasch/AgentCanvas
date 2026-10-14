@@ -17,6 +17,14 @@ export interface ClaudeLaunch {
 /** footer of the real TUI's selection dialogs */
 const DIALOG_RE = /Enter to confirm · Esc to cancel/;
 
+/** One rate-limit window of a subscription: e.g. 5 hours or 7 days, the share used, and when it resets. */
+export interface UsageWindow { label: string; usedPct: number; resetsAt: number | null; minutes?: number | null }
+
+const pct = (v: any) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+const ts = (v: any) => (v == null || v === '' ? null : typeof v === 'number' ? (v > 1e12 ? v : v * 1000) : Date.parse(v) || null);
+const windowLabel = (mins: number | null | undefined, fallback: string) =>
+  !mins ? fallback : mins % 10080 === 0 ? (mins === 10080 ? 'week' : `${mins / 10080}w`) : mins % 1440 === 0 ? `${mins / 1440}d` : mins % 60 === 0 ? `${mins / 60}h` : `${mins}m`;
+
 export const ClaudeAdapter = {
   /** Interactive launch inside tmux (doc: claude --remote-control '<hubId> · <repo>' --session-id <uuid> --dangerously-load-development-channels server:hub). */
   launchCommand(o: ClaudeLaunch): string {
@@ -55,6 +63,26 @@ export const ClaudeAdapter = {
   isReady: (paneTail: string) =>
     !DIALOG_RE.test(paneTail) &&
     (/^\s*(❯|>|│\s*>)\s*(│\s*)?$/m.test(paneTail) || /^\s*─{3,}.*\n❯ .*\n\s*─{3,}/m.test(paneTail)),
+  /** Headers for the subscription usage endpoint (the one the CLI's /usage reads), with the claude.ai OAuth login. */
+  usageHeaders: (accessToken: string) => ({ authorization: `Bearer ${accessToken}`, 'anthropic-beta': 'oauth-2025-04-20', accept: 'application/json' }),
+  /** {five_hour: {utilization, resets_at}, seven_day: {...}, seven_day_opus?: {...}} → windows */
+  parseUsage(j: any): UsageWindow[] {
+    const out: UsageWindow[] = [];
+    const add = (k: string, label: string, minutes: number) => {
+      const w = j?.[k];
+      if (w && w.utilization != null) out.push({ label, usedPct: pct(w.utilization), resetsAt: ts(w.resets_at), minutes });
+    };
+    add('five_hour', '5h', 300);
+    add('seven_day', 'week', 10080);
+    add('seven_day_opus', 'week (Opus)', 10080);
+    return out;
+  },
+  /** Name shown in claude.ai / Claude Desktop for a hub-started session: "repo · branch · first words of the prompt". */
+  rcName(o: { repo: string; branch?: string | null; prompt?: string; title?: string }): string {
+    const words = (o.title || o.prompt || '').replace(/\s+/g, ' ').trim();
+    const short = words.length > 40 ? `${words.slice(0, 39).replace(/\s+\S*$/, '')}…` : words;
+    return [o.repo, o.branch, short].filter(Boolean).join(' · ').slice(0, 100);
+  },
   /** Remote Control session URL as printed in the pane. */
   parseRemoteControlUrl(pane: string): string | undefined {
     const m = pane.match(/https:\/\/claude\.ai\/code\/(session_[A-Za-z0-9]+)/);
@@ -106,6 +134,18 @@ export interface CodexCloudTask {
 }
 
 export const CodexAdapter = {
+  /** account/rateLimits (read or updated): {primary: {usedPercent, windowDurationMins, resetsAt}, secondary: {...}} → windows */
+  parseRateLimits(r: any): UsageWindow[] {
+    const out: UsageWindow[] = [];
+    for (const [k, fb] of [['primary', '5h'], ['secondary', 'week']] as const) {
+      const w = r?.[k];
+      if (w && w.usedPercent != null) {
+        const mins = w.windowDurationMins ?? w.window_minutes ?? null;
+        out.push({ label: windowLabel(mins, fb), usedPct: pct(w.usedPercent), resetsAt: ts(w.resetsAt ?? w.resets_at), minutes: mins });
+      }
+    }
+    return out;
+  },
   daemonStart: (bin: string, codexHome: string) => `CODEX_HOME=${rpath(codexHome)} ${q(bin)} app-server daemon start`,
   proxy: (bin: string, codexHome: string) => `CODEX_HOME=${rpath(codexHome)} exec ${q(bin)} app-server proxy`,
   /** daemon start prints one JSON object line */

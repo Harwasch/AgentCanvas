@@ -60,7 +60,8 @@ let hub;
 function spawnHub() {
   hub = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'hub/dist/index.js'), path.join(ROOT, 'config/hub.config.json')], {
     stdio: ['ignore', hubOut, hubOut],
-    env: { ...process.env, NODE_EXTRA_CA_CERTS: CFG.tls?.ca || '' },
+    // like a systemd user service: no TERM, no terminal (a missing TERM once broke terminal nodes)
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'TERM')), NODE_EXTRA_CA_CERTS: CFG.tls?.ca || '' },
   });
 }
 spawnHub();
@@ -111,6 +112,13 @@ for (const a of CFG.accounts) {
 // fake web-push service: proves the hub sends VAPID-signed, encrypted pushes on approvals
 const pushes = [];
 const pushSrv = https.createServer({ cert: fs.readFileSync(CFG.tls.cert), key: fs.readFileSync(CFG.tls.key) }, (req, res) => {
+  // stand-in for the Claude subscription usage endpoint (the one behind the CLI's /usage)
+  if (req.url === '/api/oauth/usage') {
+    const ok = /^Bearer stub-oauth-/.test(req.headers.authorization || '') && /oauth/.test(req.headers['anthropic-beta'] || '');
+    res.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(ok ? { five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3600e3).toISOString() }, seven_day: { utilization: 18, resets_at: new Date(Date.now() + 5 * 86400e3).toISOString() } } : { error: 'unauthorized' }));
+    return;
+  }
   let n = 0;
   req.on('data', (d) => (n += d.length));
   req.on('end', () => {
@@ -703,6 +711,74 @@ try {
   };
   const pendingBy = (client) => until(async () => (await state()).approvals.find((a) => a.source === 'canvas-action' && a.status === 'pending' && a.data?.by === client), `pending approval from ${client}`, 10000);
   const decideRaw = (id) => fetchish('POST', `${BASE}/api/approvals/${id}`, { decision: 'allow' }, { authorization: `Bearer ${secrets().hubToken}` });
+
+  // ---- round-1 feedback: delete, free placement + Tidy, Mermaid READMEs, subscription usage
+  await check('Delete key: removes a note and hides a session from the canvas; Undo brings both back', async () => {
+    await page.goto(`${BASE}/`);
+    await T('tab-canvas').waitFor({ timeout: 15000 });
+    const st0 = await state();
+    const note = st0.cnodes.find((n) => n.type === 'note');
+    const sess = Object.values(st0.sessions).find((x) => x.kind === 'local' && x.status === 'idle' && !x.meta?.role && !x.meta?.hidden);
+    if (!note || !sess) throw new Error('need a note and an idle local session on the canvas');
+    await mcpCall('canvas_select', { ids: [note.id, sess.id] });
+    await until(async () => (await page.locator('[data-selected="1"]').count()) === 2, 'selection', 8000);
+    await page.locator('[data-testid="canvas"]').focus().catch(() => {});
+    await page.keyboard.press('Delete');
+    await T('delete-dialog').waitFor({ timeout: 5000 }); // a running/idle session asks first
+    await T('delete-keep').click();
+    await until(async () => { const s1 = await state(); return !s1.cnodes.find((n) => n.id === note.id) && Object.values(s1.sessions).find((x) => x.id === sess.id)?.meta?.hidden; }, 'note removed and session hidden', 10000);
+    if (await page.locator(`[data-node-key="${sess.id}"]`).count()) throw new Error('hidden session still on the canvas');
+    if ((await state()).sessions.find?.((x) => x.id === sess.id)?.status === 'ended') throw new Error('session was stopped');
+    await T('change-undo').click();
+    await until(async () => { const s2 = await state(); return s2.cnodes.find((n) => n.id === note.id) && !Object.values(s2.sessions).find((x) => x.id === sess.id)?.meta?.hidden; }, 'undo restores both', 10000);
+    return `note ${note.id} removed + ${sess.id} hidden (still ${sess.status}); undo restored both`;
+  });
+
+  await check('Tree layout: dragging a project freezes everything else (Custom); Tidy re-runs the layout, undoable', async () => {
+    await page.evaluate(() => localStorage.setItem('hub.layoutMode', 'tree'));
+    await page.goto(`${BASE}/`);
+    await T('tab-canvas').waitFor({ timeout: 15000 });
+    await page.waitForTimeout(1200);
+    const projs = await page.locator('[data-node="project"]').evaluateAll((els) => els.map((e) => ({ id: e.getAttribute('data-node-key'), left: e.style.left, top: e.style.top })));
+    if (projs.length < 2) throw new Error('need two projects');
+    const p0 = page.locator(`[data-node-key="${projs[0].id}"]`);
+    await page.locator('button', { hasText: /^Fit$/ }).first().click();
+    await page.waitForTimeout(500);
+    const bb = await p0.boundingBox();
+    await page.mouse.move(bb.x + bb.width / 2, bb.y + 6); await page.mouse.down(); await page.mouse.move(bb.x + bb.width / 2, bb.y + 46, { steps: 6 }); await page.mouse.up();
+    await page.waitForTimeout(800);
+    const mode = await page.locator('[data-testid="layout-seg"] .on').innerText();
+    if (mode !== 'Custom') throw new Error(`mode ${mode} after a drag in Tree`);
+    const other = await page.locator(`[data-node-key="${projs[1].id}"]`).evaluate((e) => ({ left: e.style.left, top: e.style.top }));
+    if (other.left !== projs[1].left || other.top !== projs[1].top) throw new Error(`the other project moved: ${JSON.stringify([projs[1], other])}`);
+    const moved = await p0.evaluate((e) => e.style.top);
+    if (moved === projs[0].top) throw new Error('dragged project did not move');
+    await T('tidy').click();
+    await until(async () => (await p0.evaluate((e) => e.style.top)) === projs[0].top, 'Tidy puts the project back in its tree slot', 10000);
+    await T('change-undo').click();
+    await until(async () => (await p0.evaluate((e) => e.style.top)) === moved, 'Undo of Tidy restores the free placement', 10000);
+    await page.evaluate(() => localStorage.setItem('hub.layoutMode', 'columns'));
+    return `${projs[0].id}: ${projs[0].top} → ${moved}, other project unchanged; Tidy + Undo`;
+  });
+
+  await check('README with a Mermaid flowchart renders as a diagram on the project node', async () => {
+    await focus(P1);
+    const svg = page.locator(`[data-node-key="${P1}"] .mermaid-diagram svg`);
+    await svg.first().waitFor({ timeout: 20000 });
+    const labels = await page.locator(`[data-node-key="${P1}"] .mermaid-diagram .nodeLabel`).allInnerTexts();
+    if (!labels.some((t) => /Gait planner/.test(t))) throw new Error(`labels ${JSON.stringify(labels)}`);
+    return `${labels.length} nodes: ${labels.slice(0, 3).join(', ')}…`;
+  });
+
+  await check('subscription usage: Claude (usage endpoint, hub profile login) and Codex (app-server rate limits) per account', async () => {
+    await api('POST', '/api/usage/refresh', {});
+    const u = await until(async () => { const st = await state(); const c = st.usage?.find((x) => x.vendor === 'claude' && x.accountId === 'personal' && x.windows.length); const x = st.usage?.find((y) => y.vendor === 'codex' && y.windows.length); return c && x && { c, x }; }, 'usage for claude + codex', 30000, 2000);
+    if (u.c.windows[0].usedPct !== 42 || u.x.windows[0].usedPct !== 37) throw new Error(`unexpected ${JSON.stringify(u)}`);
+    await page.goto(`${BASE}/`);
+    await page.locator('[data-testid="usage-chip"][data-vendor="claude"]').first().waitFor({ timeout: 10000 });
+    const chips = await page.locator('[data-testid="usage-chip"]').count();
+    return `claude/personal 5h ${u.c.windows[0].usedPct}% · week ${u.c.windows[1]?.usedPct}%; codex/${u.x.accountId} ${u.x.windows.map((w) => `${w.label} ${w.usedPct}%`).join(' · ')}; ${chips} chips`;
+  });
 
   await check('confirm-tier approval expires when the waiting caller disconnects (and a late Allow does nothing)', async () => {
     const rq = mcpRequest('hub_open_terminal', { host: 'mini-1', cwd: '/tmp/smoke-disconnect' }, 'smoke-disconnect');

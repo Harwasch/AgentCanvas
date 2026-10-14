@@ -18,6 +18,7 @@ import type { ComputeService } from './compute.js';
 import type { HilService } from './hil.js';
 import type { TerminalService } from './terminal.js';
 import type { CanvasService } from './canvas.js';
+import type { UsageService } from './usage.js';
 
 export interface Ctx {
   /** changes on every hub start: the event seq restarts at 0, so clients resync */
@@ -42,5 +43,6 @@ export interface Ctx {
   hil: HilService;
   terminals: TerminalService;
   canvas: CanvasService;
+  usage: UsageService;
   account(id: string): AccountConfig;
 }

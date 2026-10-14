@@ -12,6 +12,40 @@ function loadLibs() {
   return libs;
 }
 
+// ```mermaid blocks render as diagrams, like on GitHub (mermaid is loaded only when a document has one)
+let mermaidLib: Promise<typeof import('mermaid').default> | null = null;
+let mermaidN = 0;
+function loadMermaid() {
+  mermaidLib ||= import('mermaid').then((m) => {
+    m.default.initialize({
+      startOnLoad: false, securityLevel: 'strict', theme: 'dark',
+      themeVariables: { background: '#15171B', primaryColor: '#24272D', primaryTextColor: '#E7E8EA', lineColor: '#8A8F98', fontSize: '13px' },
+      fontFamily: 'Inter, system-ui, sans-serif',
+    });
+    return m.default;
+  });
+  return mermaidLib;
+}
+async function renderMermaid(root: HTMLElement) {
+  const blocks = Array.from(root.querySelectorAll('pre > code.language-mermaid')) as HTMLElement[];
+  if (!blocks.length) return;
+  const mermaid = await loadMermaid();
+  for (const code of blocks) {
+    const pre = code.parentElement!;
+    if (!pre.isConnected) continue;
+    try {
+      const { svg } = await mermaid.render(`mmd-${++mermaidN}`, code.textContent || '');
+      const div = document.createElement('div');
+      div.className = 'mermaid-diagram';
+      div.innerHTML = svg; // strict mode: labels are escaped and scripts / click handlers are dropped by mermaid
+      pre.replaceWith(div);
+    } catch (e) {
+      pre.setAttribute('title', `Mermaid: ${(e as Error).message}`); // leave the source visible
+      document.getElementById(`dmmd-${mermaidN}`)?.remove(); // mermaid's leftover error element
+    }
+  }
+}
+
 export interface MdCtx { source: FileSource; path: string; sha?: string | null }
 
 export async function renderMarkdown(md: string, ctx?: MdCtx): Promise<string> {
@@ -60,6 +94,9 @@ export function Markdown({ md, ctx, size = 'sm', style }: { md: string; ctx?: Md
     renderMarkdown(md, ctx).then((h) => { if (alive) setHtml(h); }).catch(() => { if (alive) setHtml(null); });
     return () => { alive = false; };
   }, [md, key]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (html && ref.current) void renderMermaid(ref.current);
+  }, [html]);
   if (html == null) return <div className="prose" style={{ fontSize: 12.5, color: '#C9CCD2', lineHeight: 1.6, ...style }}>{md.slice(0, 2000)}</div>;
   return <div ref={ref} className={`mdv${size === 'lg' ? ' lg' : ''}`} style={style} dangerouslySetInnerHTML={{ __html: html }} />;
 }

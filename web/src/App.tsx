@@ -6,7 +6,7 @@ import { NodeView, sheetTarget } from './nodes/NodeView';
 import { SessionNode, useSessionAttention } from './nodes/SessionNode';
 import { disablePush, enablePush, pushEnabled, pushSupported } from './push';
 import { focusNode, hub, setLayoutMode, toast, ui, useHub, useUI, type LayoutMode, type Tab } from './store';
-import { Icon, isActive, useIsPhone } from './ui';
+import { Icon, ProviderBadge, isActive, useIsPhone } from './ui';
 import { AuditView } from './views/AuditView';
 import { ConfirmDialog, PromoteModal, Toasts, TokenPrompt } from './views/Modals';
 import { ReposView } from './views/ReposView';
@@ -67,7 +67,7 @@ function Main() {
       const t = e.target as HTMLElement | null;
       if (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable || t.closest?.('.xterm'))) return;
       const u = ui.get();
-      if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu || u.askBar) return;
+      if (u.confirm || u.spawnOpen || u.promoteId || u.quickOpen || u.branchModal || u.addMenu || u.askBar || u.deleteAsk) return;
       if (Object.keys(u.expanded).length) ui.set({ expanded: {} });
     };
     window.addEventListener('keydown', onKey);
@@ -175,18 +175,46 @@ function useAccountCounts() {
   }), [accounts, sessions]);
 }
 
-function AccountChips({ onClick, active }: { onClick: () => void; active: boolean }) {
-  const counts = useAccountCounts();
+const usageColor = (p: number) => (p >= 90 ? '#FF6B6B' : p >= 70 ? '#FFD23F' : '#43D1B0');
+const resetText = (t: number | null) => {
+  if (!t) return '';
+  const m = Math.max(0, Math.round((t - Date.now()) / 60000));
+  return m < 60 ? `resets in ${m} min` : m < 48 * 60 ? `resets in ${Math.round(m / 60)} h` : `resets ${new Date(t).toLocaleDateString(undefined, { weekday: 'short' })}`;
+};
+
+/** Top right: one chip per AI subscription (Claude / Codex × account) with its 5-hour and weekly limit used. */
+function UsageChips({ onClick, active }: { onClick: () => void; active: boolean }) {
+  const usage = useHub((h) => h.usage);
+  const accounts = useHub((h) => h.accounts);
+  const order = Object.keys(accounts);
+  const list = Object.values(usage).sort((a, b) => (a.vendor === b.vendor ? order.indexOf(a.accountId) - order.indexOf(b.accountId) : a.vendor === 'claude' ? -1 : 1));
   return (
-    <button onClick={onClick} aria-label="Accounts and settings" data-testid="account-chips"
-      style={{ background: active ? '#1A1C21' : 'transparent', border: '1px solid #24272D', borderRadius: 9, height: 36, padding: '0 10px', display: 'flex', gap: 14, alignItems: 'center', color: '#E7E8EA', flex: 'none' }}>
-      {counts.map(({ a, total, running }) => (
-        <span key={a.id} style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 58, textAlign: 'left' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#A3A7AF', lineHeight: 1 }}><span className="dot" style={{ width: 6, height: 6, background: a.color }} /><span style={{ flex: 1 }}>{a.label}</span><span className="mono" style={{ color: '#E7E8EA' }}>{total}</span></span>
-          <span style={{ height: 3, background: '#24272D', borderRadius: 2, overflow: 'hidden', display: 'block' }}><span style={{ display: 'block', height: 3, width: total ? `${Math.max(12, (running / total) * 100)}%` : 0, background: a.color }} /></span>
-        </span>
-      ))}
-      {!counts.length ? <span style={{ fontSize: 11.5, color: '#8A8F98' }}>Accounts</span> : null}
+    <button onClick={onClick} aria-label="Subscription usage, accounts and settings" data-testid="usage-chips"
+      style={{ background: active ? '#1A1C21' : 'transparent', border: '1px solid #24272D', borderRadius: 9, height: 36, padding: '0 10px', display: 'flex', gap: 14, alignItems: 'center', color: '#E7E8EA', flex: 'none', maxWidth: '46vw', overflow: 'hidden' }}>
+      {list.map((u) => {
+        const a = accounts[u.accountId];
+        const tip = [`${u.vendor === 'claude' ? 'Claude' : 'Codex'} · ${a?.label || u.accountId}${u.plan ? ` (${u.plan})` : ''}`,
+          ...u.windows.map((w) => `${w.label}: ${w.usedPct}% used${w.resetsAt ? ` · ${resetText(w.resetsAt)}` : ''}`),
+          u.error ? `⚠ ${u.error}` : `as of ${new Date(u.at).toLocaleTimeString()}`].join('\n');
+        return (
+          <span key={`${u.vendor}:${u.accountId}`} title={tip} data-testid="usage-chip" data-vendor={u.vendor} data-account={u.accountId}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: u.windows.length ? 1 : 0.55 }}>
+            <ProviderBadge vendor={u.vendor} size={14} />
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 64 }}>
+              <span style={{ fontSize: 10, color: '#A3A7AF', lineHeight: 1, whiteSpace: 'nowrap' }}>{a?.label || u.accountId}{u.error && !u.windows.length ? ' · —' : ''}</span>
+              {(u.windows.length ? u.windows.slice(0, 2) : [null]).map((w, i) => (
+                <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ flex: 1, height: 3, background: '#24272D', borderRadius: 2, overflow: 'hidden', display: 'block', minWidth: 40 }}>
+                    {w ? <span style={{ display: 'block', height: 3, width: `${Math.max(2, w.usedPct)}%`, background: usageColor(w.usedPct) }} /> : null}
+                  </span>
+                  {w ? <span className="mono" style={{ fontSize: 9, color: '#8A8F98', width: 22, textAlign: 'right' }}>{w.usedPct}%</span> : null}
+                </span>
+              ))}
+            </span>
+          </span>
+        );
+      })}
+      {!list.length ? <span style={{ fontSize: 11.5, color: '#8A8F98' }}>Usage</span> : null}
     </button>
   );
 }
@@ -222,6 +250,7 @@ function SettingsPanel({ phone }: { phone: boolean }) {
         <div key={a.id} style={{ padding: '10px 14px', borderBottom: '1px solid #1E2025', display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span className="dot" style={{ background: a.color }} /><span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{a.label}</span><span className="mono" style={{ fontSize: 11.5, color: '#A3A7AF' }}>{total} active · {running} running</span></div>
           <span style={{ fontSize: 11.5, color: '#8A8F98' }}>Claude Code {claude} · Codex {codex}</span>
+          {a.github?.length ? <span style={{ fontSize: 11, color: '#8A8F98' }}>GitHub: {a.github.join(', ')}</span> : null}
           <span style={{ fontSize: 11, color: '#6E727A' }}>Cloud envs: {[...(a.cloud?.claudeEnvironments || []).map((e) => `claude/${e.label}`), ...(a.cloud?.codexEnvironments || []).map((e) => `codex/${e.label}`)].join(', ') || 'none'}</span>
         </div>
       ))}
@@ -288,7 +317,7 @@ function TopBar({ phone }: { phone: boolean }) {
       <div style={{ position: 'relative', flex: 'none' }} data-popover="1">
         {phone ? (
           <button className="b" style={{ height: 30, width: 34, padding: 0, justifyContent: 'center' }} aria-label="Menu" data-testid="menu-button" onClick={() => setPop(!pop)}><Icon name="menu" /></button>
-        ) : <AccountChips onClick={() => setPop(!pop)} active={pop} />}
+        ) : <UsageChips onClick={() => setPop(!pop)} active={pop} />}
         {pop ? (
           <div className="popover scroll" data-testid="settings-popover" style={phone ? { position: 'fixed', left: 12, right: 12, top: 56, maxHeight: 'calc(100vh - 80px)', overflow: 'auto' } : { right: 0, top: 42, width: 360, maxHeight: 'calc(100vh - 80px)', overflow: 'auto' }}>
             <SettingsPanel phone={phone} />

@@ -100,6 +100,13 @@ const WPT_README = `# wpt-charger
 - \`SYS/\` requirements, coupling budget
 - \`fea/\` FEA runs and mesh tools
 
+## Power path
+\`\`\`mermaid
+flowchart LR
+  grid[Grid 230 VAC] --> pfc[PFC] --> inv[85 kHz inverter] --> tx[TX coil]
+  tx -. air gap 120 mm .-> rx[RX coil] --> rect[Rectifier] --> bat[(Battery 400 V)]
+\`\`\`
+
 ## Targets
 | Metric | Target | Now |
 |---|---|---|

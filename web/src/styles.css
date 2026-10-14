@@ -84,7 +84,14 @@ input, textarea, select { font-family: inherit; }
 .node.dragging, .node.resizing { transition: none; z-index: 50 !important; }
 .node.dragging { cursor: grabbing; }
 .node.selected::after { content: ''; position: absolute; inset: -5px; border: 1.5px solid #E7E8EA; border-radius: 20px; box-shadow: 0 0 0 4px rgba(231,232,234,.08); pointer-events: none; z-index: 30; }
-.node .rz { position: absolute; right: -9px; bottom: -9px; width: 20px; height: 20px; cursor: nwse-resize; z-index: 31; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; touch-action: none; }
+.node .rz { position: absolute; width: 20px; height: 20px; cursor: nwse-resize; z-index: 31; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; touch-action: none; }
+.node .rz-se { right: -9px; bottom: -9px; cursor: nwse-resize; transform: scale(var(--hz, 1)); transform-origin: 100% 100%; }
+.node .rz-nw { left: -9px; top: -9px; cursor: nwse-resize; transform: scale(var(--hz, 1)); transform-origin: 0 0; }
+.node .rz-ne { right: -9px; top: -9px; cursor: nesw-resize; transform: scale(var(--hz, 1)); transform-origin: 100% 0; }
+.node .rz-sw { left: -9px; bottom: -9px; cursor: nesw-resize; transform: scale(var(--hz, 1)); transform-origin: 0 100%; }
+.node .rz-nw svg { transform: scale(-1, -1); }
+.node .rz-ne svg { transform: scaleY(-1); }
+.node .rz-sw svg { transform: scaleX(-1); }
 .node:hover .rz, .node.selected .rz, .node.resizing .rz { opacity: 1; }
 .node .rz svg { pointer-events: none; }
 @keyframes glowpulse { 0% { box-shadow: 0 0 0 0 rgba(224,137,107,.75); } 70% { box-shadow: 0 0 0 14px rgba(224,137,107,0); } 100% { box-shadow: 0 0 0 0 rgba(224,137,107,0); } }
@@ -155,3 +162,6 @@ input, textarea, select { font-family: inherit; }
 .xterm .xterm-viewport { background-color: #08090A !important; }
 .xterm .xterm-viewport::-webkit-scrollbar { width: 6px; }
 .xterm .xterm-viewport::-webkit-scrollbar-thumb { background: #2A2D33; border-radius: 6px; }
+
+.mermaid-diagram { margin: 10px 0; padding: 10px; background: #111215; border: 1px solid #24272D; border-radius: 8px; overflow-x: auto; text-align: center; }
+.mermaid-diagram svg { max-width: 100%; height: auto; }

@@ -14,7 +14,7 @@ export interface AsstCtx {
   v2: (method: string, path: string, body: any) => Resp | null;
 }
 interface VNode { id: string; kind: string; title: string; parent: string | null; x: number; y: number; w: number; h: number }
-interface Batch { id: string; ops: { id: string; prev: any }[]; created: string[]; todos: string[]; ids: string[]; summary: string[]; undone: boolean }
+interface Batch { id: string; ops: { id: string; prev: any }[]; created: string[]; todos: string[]; removed: any[]; hidden: { id: string; prev: boolean }[]; ids: string[]; summary: string[]; undone: boolean }
 
 let view: { mode: string; nodes: VNode[]; selected: string[]; focusId: string | null } | null = null;
 const batches = new Map<string, Batch>();
@@ -47,7 +47,7 @@ const nodes = () => view?.nodes || [];
 const box = (id: string) => nodes().find((x) => x.id === id);
 
 function newBatch(): Batch {
-  const b: Batch = { id: `cb_${Date.now().toString(36)}${++n}`, ops: [], created: [], todos: [], ids: [], summary: [], undone: false };
+  const b: Batch = { id: `cb_${Date.now().toString(36)}${++n}`, ops: [], created: [], todos: [], removed: [], hidden: [], ids: [], summary: [], undone: false };
   batches.set(b.id, b);
   return b;
 }
@@ -69,10 +69,14 @@ export function canvasUndo(ctx: AsstCtx, batchId: string): Resp {
   const b = batches.get(batchId);
   if (!b) return { ok: false, status: 404, data: { error: 'unknown change batch' } };
   if (b.undone) return { ok: false, status: 409, data: { error: 'already undone' } };
+  const entries: any[] = [];
   for (const o of [...b.ops].reverse()) {
-    if (o.prev) { ctx.state.layout[o.id] = o.prev; ctx.emit('layout.upsert', { nodeId: o.id, ...o.prev }); }
-    else { delete ctx.state.layout[o.id]; ctx.emit('layout.upsert', { nodeId: o.id, removed: true }); }
+    if (o.prev) { ctx.state.layout[o.id] = o.prev; entries.push({ nodeId: o.id, ...o.prev }); }
+    else { delete ctx.state.layout[o.id]; entries.push({ nodeId: o.id, removed: true }); }
   }
+  if (entries.length) ctx.emit('layout.bulk', { entries });
+  b.removed.forEach((c) => { ctx.state.cnodes.push(c); ctx.emit('cnode.upsert', clone(c)); });
+  b.hidden.forEach(({ id, prev }) => { const s = ctx.state.sessions.find((x: Session) => x.id === id); if (s) ctx.updSession(id, { meta: { ...s.meta, hidden: prev } }); });
   b.created.forEach((id) => ctx.v2('DELETE', `/api/cnodes/${id}`, {}));
   b.todos.forEach((id) => ctx.v2('DELETE', `/api/todos/${id}`, {}));
   b.undone = true;
@@ -195,4 +199,47 @@ async function addNote(ctx: AsstCtx, sid: string, b: Batch, text: string, x?: nu
   b.created.push(id);
   if (x != null && y != null) setPos(ctx, b, id, x, y);
   announce(ctx, sid, b, 'added a note', [id], x != null);
+}
+
+// ---- your own edits (same semantics as the hub's /api/canvas/remove and /api/layout/bulk)
+const USER_REMOVABLE = new Set(['note', 'file', 'todos', 'suggest', 'htodo']);
+export function userRemove(ctx: AsstCtx, ids: string[], stop: boolean): Resp {
+  const b = newBatch();
+  const out = { removed: [] as string[], hidden: [] as string[], stopped: [] as string[], closed: [] as string[], refused: [] as string[] };
+  for (const id of ids) {
+    const c = ctx.state.cnodes.find((x: any) => x.id === id);
+    if (c && (USER_REMOVABLE.has(c.type) || c.type === 'terminal')) {
+      if (c.type !== 'terminal') b.removed.push(clone(c));
+      ctx.v2('DELETE', `/api/cnodes/${id}`, {});
+      (c.type === 'terminal' ? out.closed : out.removed).push(id);
+      continue;
+    }
+    const s = ctx.state.sessions.find((x: Session) => x.id === id);
+    if (s) {
+      if (stop && !['ended', 'error', 'applied'].includes(s.status)) { ctx.updSession(id, { status: 'ended' }); out.stopped.push(id); }
+      b.hidden.push({ id, prev: !!s.meta?.hidden });
+      const cur = ctx.state.sessions.find((x: Session) => x.id === id)!;
+      ctx.updSession(id, { meta: { ...cur.meta, hidden: true } });
+      out.hidden.push(id);
+      continue;
+    }
+    out.refused.push(id);
+  }
+  const parts = [out.removed.length ? `removed ${out.removed.length} node${out.removed.length === 1 ? '' : 's'}` : '', out.hidden.length ? `hid ${out.hidden.length} session${out.hidden.length === 1 ? '' : 's'}` : '',
+    out.stopped.length ? `stopped ${out.stopped.length}` : '', out.closed.length ? `closed ${out.closed.length} terminal${out.closed.length === 1 ? '' : 's'}` : ''].filter(Boolean);
+  if (parts.length) { b.summary.push(parts.join(' · ')); ctx.emit('canvas.changed', { batchId: b.id, by: 'You', sessionId: null, summary: b.summary, ids: [], moved: false, at: Date.now() }); }
+  return { ok: true, status: 200, data: { batchId: parts.length ? b.id : null, ...out } };
+}
+
+export function bulkLayout(ctx: AsstCtx, entries: { nodeId: string; x: number; y: number; w?: number; h?: number }[], opts: { undoable?: boolean; label?: string }): Resp {
+  const b = opts.undoable ? newBatch() : null;
+  const L = ctx.state.layout;
+  const out = entries.map((e) => {
+    if (b) b.ops.push({ id: e.nodeId, prev: L[e.nodeId] ? clone(L[e.nodeId]) : null });
+    L[e.nodeId] = { ...(L[e.nodeId] || {}), x: Math.round(e.x), y: Math.round(e.y), w: e.w, h: e.h };
+    return { nodeId: e.nodeId, ...L[e.nodeId] };
+  });
+  ctx.emit('layout.bulk', { entries: out });
+  if (b) { b.summary.push(opts.label || `moved ${out.length} nodes`); ctx.emit('canvas.changed', { batchId: b.id, by: 'You', sessionId: null, summary: b.summary, ids: [], moved: false, at: Date.now() }); }
+  return { ok: true, status: 200, data: { saved: out.length, batchId: b?.id ?? null } };
 }

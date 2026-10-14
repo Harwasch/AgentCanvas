@@ -87,7 +87,7 @@ export function graphKey(g: Pick<HubData, 'hosts' | 'checkouts' | 'sessions' | '
   return [
     keyOf(g.hosts, (h) => [h.id, h.color].join(SEP)),
     keyOf(g.checkouts, (c) => [c.id, c.repo_id, c.repoName, c.host_id, c.branch, (c.apps || []).map((a) => a.dir).join(',')].join(SEP)),
-    keyOf(g.sessions, (s) => [s.id, s.meta?.role === 'assistant' ? 'A' : '', s.created_at, s.status === 'waiting' ? 'w' : isActive(s) ? 'a' : 'x', s.kind, s.vendor, s.host_id, s.checkout_id, s.branch].join(SEP)),
+    keyOf(g.sessions, (s) => [s.id, s.meta?.role === 'assistant' ? 'A' : '', s.meta?.hidden ? 'H' : '', s.created_at, s.status === 'waiting' ? 'w' : isActive(s) ? 'a' : 'x', s.kind, s.vendor, s.host_id, s.checkout_id, s.branch].join(SEP)),
     keyOf(g.nodes, (n) => [n.id, n.manifest?.node?.width, n.manifest?.node?.height, n.sessionId, n.hostId, n.dir].join(SEP)),
     keyOf(g.projects, (p) => [p.id, p.name, p.readme ? 1 : 0, p.defaultBranch].join(SEP)),
     keyOf(g.branches, (b) => [b.id, b.projectId, b.name, b.cloud?.sessionId].join(SEP)),
@@ -161,7 +161,7 @@ export function buildGraph(g: GraphInput): Graph {
   const cloudBranchOf: Record<string, string> = {};
   branches.forEach((b) => { if (b.cloud?.sessionId) cloudBranchOf[b.cloud.sessionId] = b.id; });
   // the canvas assistant lives in the Ask Claude panel, not on the canvas
-  const sessions = Object.values(g.sessions).filter((s) => s.meta?.role !== 'assistant').sort((a, b) => tsOf(a.created_at) - tsOf(b.created_at));
+  const sessions = Object.values(g.sessions).filter((s) => s.meta?.role !== 'assistant' && !s.meta?.hidden).sort((a, b) => tsOf(a.created_at) - tsOf(b.created_at));
   sessions.forEach((s) => {
     const e = ex(s.id);
     const key = computeKey(s);

@@ -26,6 +26,7 @@ import { ComputeService } from './compute.js';
 import { HilService } from './hil.js';
 import { TerminalService } from './terminal.js';
 import { CanvasService } from './canvas.js';
+import { UsageService } from './usage.js';
 import { startRetention } from './retention.js';
 
 const L = log('hub');
@@ -59,6 +60,7 @@ export async function main() {
   c.hil = new HilService(c);
   c.terminals = new TerminalService(c);
   c.canvas = new CanvasService(c);
+  c.usage = new UsageService(c);
   // a session that ends gives back its device locks (only real ends: a session on an unreachable host is kept, not ended)
   bus.on('event', (ev: any) => {
     if (ev.type === 'session.upsert' && ev.data.status === 'ended') c.compute.releaseAll(ev.data.id);
@@ -170,6 +172,7 @@ export async function main() {
   c.projects.start();
   c.compute.start();
   c.nodes.start();
+  c.usage.start();
   c.claude.recover(undefined, { startup: true }).catch((e) => L(`claude recover: ${e.message}`));
   c.codex.recover().catch((e) => L(`codex recover: ${e.message}`));
   c.claude.startLiveness();

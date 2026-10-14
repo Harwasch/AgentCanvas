@@ -245,6 +245,35 @@ Same method as phase 4: record each result, fix the adapter, then build, test, r
 
 ---
 
+## Updating a running hub (e.g. after new commits on `claude/hub-v1`)
+
+Give the agent this:
+```
+Update Agent Hub on this machine (~/agent-hub, branch claude/hub-v1, systemd user service agent-hub). Follow
+docs/RUNBOOK.md "Rules for the agent". Steps: git pull; npm ci; npm run build; npm test (must be green);
+systemctl --user restart agent-hub; watch journalctl --user -u agent-hub for 60 s and report problems.
+Then apply anything listed under "Update notes" below that is newer than the last update you applied
+(record it in ~/agent-hub-bringup.md).
+```
+
+### Update notes
+
+**Round 1 (canvas delete / Tidy / Mermaid / usage chips / terminal and startup fixes):**
+1. **Host names.**
+   - In `config/hub.config.json`, set each host's `label` to its real machine name: e.g. `"label": "HW Geekom"` on the hub PC's entry, `"label": "HWorker"` on the second mini PC.
+   - Change only `label`: the `id` must stay as it is, because existing sessions refer to it.
+   - Restart the hub.
+2. **Usage chips.**
+   - Claude usage is read with the hub's own profile login per account: `~/.agent-hub/profiles/<id>/claude`, from phase 3.
+   - If a Claude chip says it isn't logged in or the login has expired, the person runs `CLAUDE_CONFIG_DIR=~/.agent-hub/profiles/<id>/claude claude` once **[HUMAN]**.
+   - Codex chips fill in once a Codex session has run on any host for that account.
+   - Record what the real endpoints return in `docs/OPEN-QUESTIONS.md` #52 and #53.
+3. **Terminals.** Open a terminal on each host from its machine node and type `echo ok`. The old error "terminal does not support clear" should be gone.
+4. **Session start.**
+   - Start a Claude session with a prompt on each host. It should reach running, then idle, with the reply, and must not end up in error.
+   - If the hub log shows `ready prompt not recognised … Pane tail:`, update `ClaudeAdapter.isReady` in `hub/src/adapters.ts` to match that tail (#54), then build, test, restart, commit and push.
+5. **Old Codex threads.** Old Codex threads no longer appear when the hub connects. Threads already on the canvas can be removed with Delete; they stay in Codex.
+
 ## After bring-up: when something breaks
 
 Give the agent this:

@@ -124,7 +124,21 @@ export class CodexDriver {
   /** List threads in the daemon's store (cli + vscode sources by default) and show them as sessions. */
   private async importThreads(cn: Conn) {
     const r = await cn.peer!.request('thread/list', { limit: 50, sortKey: 'updated_at' });
-    for (const t of r.data || []) this.upsertThread(cn, t);
+    const since = Date.now() - this.c.cfg.codexImportDays * 86400_000;
+    for (const t of r.data || []) {
+      // old threads stay in Codex; only recent ones (or ones the hub already shows) become canvas nodes
+      const at = Number(t.updatedAt ?? t.createdAt ?? 0);
+      if (!this.sessionFor(t.id) && (at > 1e12 ? at : at * 1000) < since) continue;
+      this.upsertThread(cn, t);
+    }
+  }
+
+  /** Subscription rate-limit windows for this account, from any connected daemon (null when none is connected). */
+  async rateLimits(accountId: string): Promise<any | null> {
+    const cn = [...this.conns.values()].find((x) => x.accountId === accountId && x.up && x.peer);
+    if (!cn) return null;
+    const r = await cn.peer!.request('account/rateLimits/read', {}, 15000);
+    return r?.rateLimits ?? r ?? null;
   }
 
   private sessionFor(threadId: string): Session | undefined {
@@ -271,6 +285,9 @@ export class CodexDriver {
 
   private onNotification(cn: Conn, method: string, p: any) {
     switch (method) {
+      case 'account/rateLimits/updated':
+        this.c.usage.fromCodex(cn.accountId, p?.rateLimits ?? p);
+        return;
       case 'thread/started':
         // broadcast to every connection: threads started elsewhere (desktop app) appear here
         this.upsertThread(cn, p.thread);

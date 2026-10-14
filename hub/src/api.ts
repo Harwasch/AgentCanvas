@@ -36,12 +36,13 @@ export function routes(c: Ctx): Router {
     seq: c.bus.seq,
     boot: c.bootId,
     hosts: c.cfg.hosts.map((h) => c.hosts.row(h.id)),
-    accounts: c.cfg.accounts.map((a) => ({ id: a.id, label: a.label || a.id, color: a.color || '#8A8F98', cloud: { claudeEnvironments: a.cloud?.claudeEnvironments || [], codexEnvironments: a.cloud?.codexEnvironments || [] } })),
+    accounts: c.cfg.accounts.map((a) => ({ id: a.id, label: a.label || a.id, color: a.color || '#8A8F98', github: a.gh?.owners || [], cloud: { claudeEnvironments: a.cloud?.claudeEnvironments || [], codexEnvironments: a.cloud?.codexEnvironments || [] } })),
     checkouts: c.db.all('SELECT * FROM checkout ORDER BY host_id, path').map((x) => c.repos.row(x)),
     // ended sessions older than retention.stateEndedDays are left out (GET /api/sessions/archive lists them)
     sessions: c.store.sessions(...inStateWhere(c.cfg.retention)),
     approvals: c.store.pendingApprovals(),
     nodes: c.apps.nodes(),
+    usage: c.usage.list(),
     layout: Object.fromEntries(c.db.all('SELECT * FROM layout').map((l) => [l.node_id, layoutEntry(l)])),
     config: { publicUrl: c.cfg.publicUrl, vapidPublicKey: c.push.publicKey },
     projects: c.projects.projects(),
@@ -424,6 +425,14 @@ export function routes(c: Ctx): Router {
     return { ok: true };
   });
   r.get('/api/canvas/batches', 'hub', () => c.canvas.batchesList());
+  r.post('/api/usage/refresh', 'hub', async () => { await c.usage.refresh(); return c.usage.list(); });
+  // your own edits: Delete / Backspace on the selection, and many positions at once (freeze on first drag, Tidy)
+  r.post('/api/canvas/remove', 'hub', (req) => c.canvas.userRemove(Array.isArray(req.body?.ids) ? req.body.ids : [], !!req.body?.stop));
+  r.post('/api/layout/bulk', 'hub', (req) => c.canvas.bulkLayout(req.body?.entries || [], { undoable: !!req.body?.undoable, label: req.body?.label ? String(req.body.label).slice(0, 80) : undefined }));
+  r.post('/api/sessions/:id/visibility', 'hub', (req) => {
+    const s = session(req.params.id);
+    return c.store.upsertSession({ id: s.id, meta: { hidden: !!req.body?.hidden } });
+  });
   r.post('/api/canvas/undo/:id', 'hub', (req) => {
     try {
       return c.canvas.undo(req.params.id);

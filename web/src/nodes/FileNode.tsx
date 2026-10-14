@@ -9,10 +9,10 @@ import { Chevron, FolderChip, RemoveBtn, SheetBack, stop, useLive, type NodeMode
 import { FileBody, useFileText } from './FileBody';
 import { mdHeadings } from './Markdown';
 
-export function sourceLabel(d: FileData, h: { checkouts: Record<string, { repoName: string; branch: string; host_id: string }>; projects: Record<string, { name: string }> }) {
+export function sourceLabel(d: FileData, h: { checkouts: Record<string, { repoName: string; branch: string; host_id: string }>; projects: Record<string, { name: string }>; hosts?: Record<string, { label: string }> }) {
   const s = d.source;
   if (!s) return '';
-  if (s.kind === 'checkout') { const c = h.checkouts[s.checkoutId]; return c ? `${c.host_id}:${c.branch}` : 'checkout'; }
+  if (s.kind === 'checkout') { const c = h.checkouts[s.checkoutId]; return c ? `${h.hosts?.[c.host_id]?.label || c.host_id}:${c.branch}` : 'checkout'; }
   return s.ref;
 }
 

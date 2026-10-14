@@ -237,6 +237,9 @@ async function serve() {
         if (!t) throw new RpcErr(-32600, `thread not found: ${p.threadId}`);
         return { thread: strip(t, !!p.includeTurns) };
       }
+      case 'account/rateLimits/read':
+        // the real app-server reports the subscription's windows: primary (5 h) and secondary (weekly)
+        return { rateLimits: { primary: { usedPercent: 37, windowDurationMins: 300, resetsAt: now() + 2 * 3600 }, secondary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: now() + 4 * 86400 }, planType: 'plus' } };
       case 'thread/list': {
         const kinds = p.sourceKinds?.length ? p.sourceKinds : ['cli', 'vscode'];
         const all = { ...stored };

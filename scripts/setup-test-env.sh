@@ -76,6 +76,12 @@ chmod a+rx "$(dirname "$NODE_BIN")" "$NODE_BIN"
 mkdir -p "$GITSRV"
 mkrepo() { # name, seed-dir
   local name="$1"
+  # rebuild when scripts/seed/<name> changed since the repo was made (and drop the host clones of the old history)
+  local sum; sum="$(cd "$REPO/scripts/seed/$name" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
+  if [ -d "$GITSRV/$name.git" ] && [ "$(cat "$GITSRV/$name.git/seed-sum" 2>/dev/null)" != "$sum" ]; then
+    rm -rf "$GITSRV/$name.git"
+    for u in hosta hostb; do h="$(getent passwd "$u" | cut -d: -f6)"; [ -n "$h" ] && rm -rf "$h/code/$name" "$h/code/$name.worktrees"; done
+  fi
   if [ ! -d "$GITSRV/$name.git" ]; then
     local tmp; tmp="$(mktemp -d)"
     git -C "$tmp" init -q -b main
@@ -83,6 +89,7 @@ mkrepo() { # name, seed-dir
     git -C "$tmp" add -A
     git -C "$tmp" -c user.name=seed -c user.email=seed@example.com commit -qm "Initial import of $name"
     git clone -q --bare "$tmp" "$GITSRV/$name.git"
+    echo "$sum" > "$GITSRV/$name.git/seed-sum"
     rm -rf "$tmp"
   fi
 }
@@ -137,6 +144,8 @@ done
 for a in personal work; do
   install -d -o "$HUB_USER" "$DATA/profiles/$a/claude" "$DATA/profiles/$a/codex" "$DATA/profiles/$a/scratch"
   echo "{\"stubLogin\":\"$a\"}" > "$DATA/profiles/$a/claude/.stub-auth.json"
+  # a claude.ai OAuth login in the real CLI's credentials format: the hub reads subscription usage with it
+  echo "{\"claudeAiOauth\":{\"accessToken\":\"stub-oauth-$a\",\"expiresAt\":4102444800000,\"subscriptionType\":\"max\"}}" > "$DATA/profiles/$a/claude/.credentials.json"
   echo "{\"stubLogin\":\"$a\"}" > "$DATA/profiles/$a/codex/.stub-auth.json"
   install -d -o "$HUB_USER" "$DATA/profiles/$a/gh"
   printf 'github.com:\n    user: %s-gh\n    git_protocol: https\n' "$a" > "$DATA/profiles/$a/gh/hosts.yml"
@@ -166,7 +175,7 @@ cat > "$REPO/config/hub.config.json" <<EOF
   "tls": { "cert": "$DATA/tls/cert.pem", "key": "$DATA/tls/key.pem", "ca": "$DATA/tls/cert.pem" },
   "dataDir": "$DATA",
   "adapters": {
-    "claude": { "bin": "$STUBS/bin/claude", "cloudBin": "$STUBS/bin/claude" },
+    "claude": { "bin": "$STUBS/bin/claude", "cloudBin": "$STUBS/bin/claude", "usageUrl": "https://localhost:8444/api/oauth/usage" },
     "codex":  { "bin": "$STUBS/bin/codex",  "cloudBin": "$STUBS/bin/codex" },
     "gh":     { "bin": "$STUBS/bin/gh" }
   },

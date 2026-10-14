@@ -6,6 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import https from 'node:https';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 
 export const home = os.homedir();
 export const expand = (p) => (p && p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
@@ -63,22 +64,46 @@ export function postJson(url, body, headers = {}, timeoutMs = 30000) {
   });
 }
 
-/** Fire all matching HTTP hooks; returns parsed JSON outputs from 2xx JSON bodies (others are non-blocking errors). */
+/** Run a command hook as Claude Code does: payload on stdin, JSON on stdout when it exits 0. */
+function runCommand(command, payload, timeoutMs) {
+  return new Promise((resolve) => {
+    const p = spawn('sh', ['-c', command], { stdio: ['pipe', 'pipe', 'ignore'] });
+    let out = '';
+    const t = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
+    p.stdout.on('data', (d) => (out += d));
+    p.on('error', () => resolve({ code: -1, out: '' }));
+    p.on('close', (code) => {
+      clearTimeout(t);
+      resolve({ code, out });
+    });
+    p.stdin.on('error', () => {});
+    p.stdin.end(JSON.stringify(payload));
+  });
+}
+
+/** Fire all matching http and command hooks; returns parsed JSON outputs (anything else is a non-blocking error). */
 export async function fireHooks(settingsList, event, payload, toolName) {
-  const hs = hooksFor(settingsList, event, toolName).filter((h) => h.type === 'http');
+  const hs = hooksFor(settingsList, event, toolName).filter((h) => h.type === 'http' || h.type === 'command');
+  const parse = (body) => {
+    if (!body.trim()) return null;
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  };
   const results = await Promise.all(
     hs.map(async (h) => {
+      const body = { ...payload, hook_event_name: event };
+      const ms = (h.timeout ?? (event === 'UserPromptSubmit' ? 30 : 600)) * 1000;
+      if (h.type === 'command') {
+        const r = await runCommand(h.command, body, ms);
+        return r.code === 0 ? parse(r.out) : null;
+      }
       const allowed = h.allowedEnvVars || [];
       const headers = Object.fromEntries(Object.entries(h.headers || {}).map(([k, v]) => [k, interp(v, allowed)]));
-      const r = await postJson(h.url, { ...payload, hook_event_name: event }, headers, (h.timeout ?? (event === 'UserPromptSubmit' ? 30 : 600)) * 1000);
-      if (r.status >= 200 && r.status < 300 && r.body.trim()) {
-        try {
-          return JSON.parse(r.body);
-        } catch {
-          return null;
-        }
-      }
-      return null;
+      const r = await postJson(h.url, body, headers, ms);
+      return r.status >= 200 && r.status < 300 ? parse(r.body) : null;
     }),
   );
   return results.filter(Boolean);

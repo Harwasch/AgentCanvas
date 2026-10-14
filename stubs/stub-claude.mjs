@@ -5,7 +5,7 @@
 //    - loads MCP servers from --mcp-config; a server named in the dev-channels flag that declares
 //      experimental['claude/channel'] (and did not negotiate 2026-07-28) is registered as a channel
 //    - channel messages become user turns; tool approvals relay via claude/channel/permission
-//    - fires HTTP hooks: UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, Stop
+//    - fires HTTP and command hooks: UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, Stop
 //    - writes the JSONL transcript under $CLAUDE_CONFIG_DIR/projects/<slug>/<session-id>.jsonl
 //    - Escape interrupts the running turn; /model and /effort work
 //  Cloud: --cloud / -p --cloud <id>  → stub-cloud.mjs

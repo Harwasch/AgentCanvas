@@ -10,6 +10,9 @@ Modes
   hub_channel.py --mcp-only    same hub tools, no channel (Codex [mcp_servers.hub]).
   hub_channel.py relay <id>    byte relay stdio <-> the session socket; the hub runs
                                this over its multiplexed SSH connection.
+  hub_channel.py hook <secs>   Claude Code command hook: POSTs the payload on stdin to
+                               HUB_URL/hooks/claude and prints the hub's answer (HTTP hooks
+                               cannot reach tailnet addresses).
   hub_channel.py --external    stdio MCP server on YOUR machine (Claude Desktop): proxies
                                the hub's canvas tools from HUB_MCP_URL (…/mcp) with the
                                bearer HUB_MCP_TOKEN. Nothing else is needed on that machine.
@@ -364,10 +367,35 @@ def external():
         w.join(timeout=30)
 
 
+def hook(timeout):
+    """Claude Code command hook: forward the payload on stdin to the hub, print its answer.
+
+    Exit 0 with the hub's JSON on stdout; on any failure exit 1 (a non-blocking hook error),
+    never 2, which Claude would treat as "block this action".
+    """
+    url = ENV.get("HUB_URL", "").rstrip("/") + "/hooks/claude"
+    headers = {"content-type": "application/json", "authorization": "Bearer " + ENV.get("HUB_HOOK_TOKEN", "")}
+    if ENV.get("HUB_SESSION_TOKEN"):
+        headers["x-hub-session-token"] = ENV["HUB_SESSION_TOKEN"]
+    req = urllib.request.Request(url, data=sys.stdin.buffer.read(), method="POST", headers=headers)
+    ctx = ssl.create_default_context(cafile=ENV.get("HUB_CA_FILE") or None)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            sys.stdout.write(r.read().decode(errors="replace"))
+        sys.exit(0)
+    except urllib.error.HTTPError as e:
+        sys.stderr.write("hub hook %s: %s\n" % (e.code, e.read().decode(errors="replace")[:500]))
+    except Exception as e:  # noqa
+        sys.stderr.write("hub unreachable: %s\n" % e)
+    sys.exit(1)
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a and a[0] == "--external":
         external()
+    elif a and a[0] == "hook":
+        hook(float(a[1]) if len(a) > 1 else 10)
     elif a and a[0] == "relay":
         relay(a[1])
     else:

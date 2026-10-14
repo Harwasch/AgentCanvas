@@ -23,15 +23,14 @@ export interface HostInfo {
 
 const HOOK_EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'Stop', 'Notification'];
 
-export function claudeHookSettings(cfg: HubConfig) {
-  const hook = (timeout: number) => ({
-    type: 'http',
-    url: `${cfg.hostCallbackUrl.replace(/\/$/, '')}/hooks/claude`,
-    // host token from hub.env; the session secret proves which hub session the hook comes from
-    headers: { Authorization: 'Bearer $HUB_HOOK_TOKEN', 'X-Hub-Session-Token': '$HUB_SESSION_TOKEN' },
-    allowedEnvVars: ['HUB_HOOK_TOKEN', 'HUB_SESSION_TOKEN'],
-    timeout,
-  });
+/**
+ * Command hooks, not `type: "http"`: Claude Code (2.1.29x) refuses HTTP hooks to private and CGNAT addresses,
+ * which includes every tailnet URL. `hub_channel.py hook` forwards the payload to HUB_URL/hooks/claude with the
+ * host token (hub.env) and the session secret (HUB_SESSION_TOKEN in the claude environment); see OPEN-QUESTIONS #13.
+ */
+export function claudeHookSettings(py: string, script: string) {
+  // the script's own HTTP timeout stays under Claude's, so a held PermissionRequest ends as a hub answer or a clean error
+  const hook = (timeout: number) => ({ type: 'command', command: `${q(py)} ${q(script)} hook ${timeout - 5}`, timeout });
   const hooks: Record<string, any[]> = {};
   for (const ev of HOOK_EVENTS) {
     const tool = ['PreToolUse', 'PermissionRequest', 'PostToolUse'].includes(ev);
@@ -80,8 +79,8 @@ export class Bootstrapper {
     ].join('\n');
     await this.hosts.put(hostId, `${base}/hub.env`, env + '\n', '600');
     await this.hosts.put(hostId, `${base}/hub_channel.py`, fs.readFileSync(path.join(HOST_FILES, 'hub_channel.py'), 'utf8'), '700');
-    await this.hosts.put(hostId, `${base}/claude-settings.json`, JSON.stringify(claudeHookSettings(this.cfg), null, 2), '600');
     const py = this.hosts.bin(hostId, 'python');
+    await this.hosts.put(hostId, `${base}/claude-settings.json`, JSON.stringify(claudeHookSettings(py, `${base}/hub_channel.py`), null, 2), '600');
     await this.hosts.put(
       hostId,
       `${base}/mcp.json`,

@@ -92,3 +92,17 @@ The stubs implement each of these as listed below. Every item needs checking aga
 50. **Streamable HTTP minimalism:** `/mcp` returns plain JSON, with no `Mcp-Session-Id` and no SSE. To verify: that `claude mcp add --transport http` accepts this (the spec allows a JSON response to a POST).
 51. **Hub tool list fetched at `tools/list`:** the channel script asks the hub for canvas tools (10 s timeout) when Claude lists tools. To verify: whether real Claude Code tolerates that delay at startup, and whether it re-lists after `notifications/tools/list_changed` (not sent yet).
 
+
+## Bring-up results (real CLIs)
+
+Claude Code 2.1.296 on `mini-1` (Ubuntu 26.04), 2026-10-13.
+
+- **Profile dir (new).** DIFFERENT. Setting `CLAUDE_CONFIG_DIR` at all moves the state file from `~/.claude.json` to `$CLAUDE_CONFIG_DIR/.claude.json`, so `CLAUDE_CONFIG_DIR=~/.claude` looks like a fresh install (first-run theme picker). Fixed: `ClaudeAdapter.configDirEnv` unsets it for the default `~/.claude`.
+- **#1** VERIFIED. The dev channel and `--remote-control` run together, and `server:hub` resolves from `--mcp-config` (channel connected).
+- **#4** VERIFIED. `UserPromptSubmit` fires for channel messages; the TUI shows them as `← hub: <text>`.
+- **#5** VERIFIED. `hub_channel.py` gets `HUB_SESSION_ID` from the `claude` environment (relay socket connected).
+- **#6** VERIFIED. A channel that answers `initialize` with `2025-06-18` registers.
+- **#8** DIFFERENT. The dev-channel warning matches and Enter picks "I am using this for local development". No Remote Control y/n prompt was shown. The trust dialog's new wording ("Quick safety check: Is this a project you created or one you trust?") lists "No, exit" first and preselected, so Enter would exit. New one-time prompt: "Try the new fullscreen renderer?". Fixed: Down+Enter for both. Live check of the new trust answer is still pending (a subfolder of a trusted folder shows no dialog); unit-tested on the captured pane.
+- **#9** DIFFERENT. The idle line is `❯ ` plus a placeholder (`Try "how does <filepath> work?"`) between two `─` rules, so the old regex never matched, and the 15 s fallback declared "ready" while a dialog was open. Fixed: `isReady` accepts the ruled input box and rejects panes with "Enter to confirm · Esc to cancel"; the fallback never fires with a dialog open.
+- **#10** VERIFIED (wording differs, parser works). The banner is `/remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_…`.
+- **#13** DIFFERENT, **blocking**. Real Claude Code refuses HTTP hooks whose host resolves to a private, link-local or CGNAT address, including Tailscale's 100.64/10: `HTTP hook blocked: <host> resolves to 100.x (private/link-local address). Loopback (127.0.0.1, ::1) is allowed for local dev.` The check is skipped only when a proxy is used. Every hook to `hostCallbackUrl` on the tailnet fails. Needs a design decision (loopback callback per host).

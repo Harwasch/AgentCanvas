@@ -70,7 +70,7 @@ export class ClaudeDriver {
     // the per-session secret goes through a 0600 file (never a command line); the shell sources and removes it
     const tokFile = `${info.base}/run/${hubId}.env`;
     await this.c.hosts.put(o.hostId, tokFile, `HUB_SESSION_TOKEN=${sessionToken(this.c.secrets.hookToken, hubId)}\n`, '600');
-    const inner = `set -a; . ${q(info.base + '/hub.env')}; . ${q(tokFile)}; set +a; rm -f ${q(tokFile)}; export CLAUDE_CONFIG_DIR=${q(configDir)} HUB_SESSION_ID=${q(hubId)}${o.role ? ` HUB_ROLE=${q(o.role)}` : ''}; exec ${launch}`;
+    const inner = `set -a; . ${q(info.base + '/hub.env')}; . ${q(tokFile)}; set +a; rm -f ${q(tokFile)}; ${ClaudeAdapter.configDirEnv(info.home, configDir)}HUB_SESSION_ID=${q(hubId)}${o.role ? ` HUB_ROLE=${q(o.role)}` : ''}; exec ${launch}`;
     const s = this.c.store.upsertSession({
       id: hubId, vendor: 'claude', kind: 'local', host_id: o.hostId, account_id: o.accountId, checkout_id: o.checkoutId ?? null, cwd: o.cwd,
       branch: o.branch ?? null, native_id: uuid, native_url: null, title: o.title || (o.prompt ? o.prompt.slice(0, 60) : `Claude · ${repo}`),
@@ -128,7 +128,7 @@ export class ClaudeDriver {
           }
       const url = ClaudeAdapter.parseRemoteControlUrl(pane);
       if (url && s.native_url !== url) this.c.store.upsertSession({ id, native_url: url });
-      if (ClaudeAdapter.isReady(tail) || (i > 30 && !ClaudeAdapter.startupPrompts.some((p) => p.re.test(tail)))) ready = true;
+      if (ClaudeAdapter.isReady(tail) || (i > 30 && !ClaudeAdapter.dialogOpen(tail) && !ClaudeAdapter.startupPrompts.some((p) => p.re.test(tail)))) ready = true;
     }
     if (!ready) throw new Error('claude did not become ready within 30 s');
     this.c.store.upsertSession({ id, status: prompt ? 'running' : 'idle', last_event: 'ready' });

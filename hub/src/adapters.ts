@@ -14,6 +14,9 @@ export interface ClaudeLaunch {
   model?: string;
 }
 
+/** footer of the real TUI's selection dialogs */
+const DIALOG_RE = /Enter to confirm · Esc to cancel/;
+
 export const ClaudeAdapter = {
   /** Interactive launch inside tmux (doc: claude --remote-control '<hubId> · <repo>' --session-id <uuid> --dangerously-load-development-channels server:hub). */
   launchCommand(o: ClaudeLaunch): string {
@@ -36,13 +39,33 @@ export const ClaudeAdapter = {
     { re: /Loading development channels|I am using this for local development/i, keys: ['Enter'], name: 'dev-channel warning' },
     { re: /Enable Remote Control\? \(y\/n\)/i, keys: ['y', 'Enter'], name: 'remote-control enable' },
     { re: /Do you trust the files in this folder|Trust .*\? \[y\/N\]/i, keys: ['Enter'], name: 'workspace trust' },
+    // v2.1.296: "❯ No, exit" is listed first and preselected, so Enter alone would exit
+    { re: /Is this a project you created or one you trust/i, keys: ['Down', 'Enter'], name: 'workspace trust (2.1.29x)' },
+    // one-time promo; the fullscreen renderer would change what the hub scrapes from the pane
+    { re: /Try the new fullscreen renderer\?/i, keys: ['Down', 'Enter'], name: 'fullscreen renderer: not now' },
   ],
-  /** Idle input prompt visible: stub prints "❯"; the real TUI draws "> " inside a box (dialogs' "❯ 1." does not match). */
-  isReady: (paneTail: string) => /^\s*(❯|>|│\s*>)\s*(│\s*)?$/m.test(paneTail),
+  /** A selection dialog is open (startup prompt, picker); the pane is not at the input prompt. */
+  dialogOpen: (paneTail: string) => DIALOG_RE.test(paneTail),
+  /**
+   * Idle input prompt visible: stub prints "❯"; the real TUI (2.1.29x) draws "❯ " with an optional placeholder
+   * between two ─ rules. Dialog options ("❯ 1. …") are not ruled off like that.
+   */
+  isReady: (paneTail: string) =>
+    !DIALOG_RE.test(paneTail) &&
+    (/^\s*(❯|>|│\s*>)\s*(│\s*)?$/m.test(paneTail) || /^\s*─{3,}.*\n❯ .*\n\s*─{3,}/m.test(paneTail)),
   /** Remote Control session URL as printed in the pane. */
   parseRemoteControlUrl(pane: string): string | undefined {
     const m = pane.match(/https:\/\/claude\.ai\/code\/(session_[A-Za-z0-9]+)/);
     return m ? `https://claude.ai/code/${m[1]}` : undefined;
+  },
+  /**
+   * Shell env prefix for the session's profile. Setting CLAUDE_CONFIG_DIR at all moves the state file from
+   * ~/.claude.json to $CLAUDE_CONFIG_DIR/.claude.json, so for the default ~/.claude it is unset instead:
+   * the session then shares the user's own setup (onboarding, trusted folders, MCP servers).
+   */
+  configDirEnv(home: string, configDir: string): string {
+    const norm = (p: string) => p.replace(/\/+$/, '');
+    return norm(configDir) === `${norm(home)}/.claude` ? 'unset CLAUDE_CONFIG_DIR; export ' : `export CLAUDE_CONFIG_DIR=${q(configDir)} `;
   },
   transcriptPath(configDir: string, cwd: string, uuid: string) {
     return `${configDir.replace(/\/$/, '')}/projects/${cwd.replace(/[^A-Za-z0-9]/g, '-').slice(0, 200)}/${uuid}.jsonl`;

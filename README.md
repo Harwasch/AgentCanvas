@@ -69,6 +69,13 @@ The chips at the top right show one entry per AI subscription (Claude or Codex, 
 - **Claude:** read every `usagePollIntervalSec` (default 300) from the endpoint the CLI's `/usage` uses, signed in as the hub's own profile for that account (`hub.claudeConfigDir`; log Claude in there once). No API key is involved. Set `adapters.claude.usageUrl` to `""` to turn it off.
 - **Codex:** read from the app-server (`account/rateLimits`) of any connected Codex daemon for that account. Until a Codex session has run on some host, the chip shows "—".
 
+## Claude sessions started outside the hub
+
+Claude sessions you start yourself on a host, in the Claude app or a terminal, show up on the canvas read-only (labelled "read-only · Claude app"). The hub picks up ones active in the last `claudeImportDays` (default 2) and any new ones after that, and adds their new messages every `claudeImportIntervalSec` (default 30). Older ones stay in the app. Set `claudeImportDays` to 0 to turn this off.
+
+- You can read them, open a shell in their folder, and **Hide** them. Chat, approvals and interrupts stay in the app that runs them.
+- **Take over…** continues one in the hub (`claude --resume`), in the same node. Close it in the Claude app or terminal first: two programs writing to one conversation corrupt it.
+
 ## Host names
 
 Each host's `label` in `config/hub.config.json` is what the canvas shows, for example `"label": "HW Geekom"`. The `id` is only an internal key: keep it stable, because sessions refer to it. To rename a host, change only its `label` and restart the hub.

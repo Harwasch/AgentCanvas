@@ -178,6 +178,8 @@
   },
   "repoIndexIntervalSec": 60,
   "cloudPollIntervalSec": 30,
+  "claudeImportDays": 2,
+  "claudeImportIntervalSec": 30,
   "githubPollIntervalSec": 60,
   "metricsIntervalSec": 10,
   "claudeLivenessIntervalSec": 60,

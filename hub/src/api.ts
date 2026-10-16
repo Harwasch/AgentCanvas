@@ -11,6 +11,7 @@ import { routesV2 } from './api2.js';
 import { spawnSession, sendToSession } from './nodes.js';
 import { layoutEntry, mergeSize, type CanvasCaller } from './canvas.js';
 import { sessionCallerReason } from './tokens.js';
+import { ReadOnlyError } from './claude/driver.js';
 
 const L = log('api');
 
@@ -29,6 +30,10 @@ export function routes(c: Ctx): Router {
     const s = c.store.session(id);
     if (!s) throw new HttpError(404, 'unknown session');
     return s;
+  };
+  /** sessions started outside the hub are shown, not driven, until taken over */
+  const readOnly = (s: { meta?: any }) => {
+    if (s.meta?.external) throw new HttpError(409, new ReadOnlyError().message);
   };
 
   // ------------------------------------------------------------- state
@@ -80,6 +85,7 @@ export function routes(c: Ctx): Router {
   r.post('/api/sessions/:id/send', 'hub', async (req) => {
     const s = session(req.params.id);
     const text = need(req.body?.text, 'text');
+    readOnly(s);
     if (s.kind === 'cloud' && s.vendor === 'codex') throw new HttpError(409, 'Codex cloud tasks cannot be continued outside ChatGPT; open it there');
     await sendToSession(c, s, text);
     return { ok: true };
@@ -87,6 +93,7 @@ export function routes(c: Ctx): Router {
   r.post('/api/sessions/:id/interrupt', 'hub', async (req) => {
     const s = session(req.params.id);
     if (s.kind === 'cloud') throw new HttpError(409, 'cloud sessions cannot be interrupted from the hub');
+    readOnly(s);
     if (s.vendor === 'claude') await c.claude.interrupt(s.id);
     else await c.codex.interrupt(s.id);
     return { ok: true };
@@ -94,6 +101,7 @@ export function routes(c: Ctx): Router {
   r.post('/api/sessions/:id/settings', 'hub', async (req) => {
     const s = session(req.params.id);
     if (s.kind === 'cloud') throw new HttpError(409, 'not supported for cloud sessions');
+    readOnly(s);
     if (s.vendor === 'claude') await c.claude.settings(s.id, req.body || {});
     else await c.codex.settings(s.id, req.body || {});
     return c.store.session(s.id);
@@ -104,6 +112,13 @@ export function routes(c: Ctx): Router {
     else if (s.vendor === 'claude') await c.claude.stop(s.id);
     else await c.codex.stop(s.id);
     return { ok: true };
+  });
+  // a Claude session started outside the hub (Claude app, terminal): continue it here with `claude --resume`
+  r.post('/api/sessions/:id/takeover', 'hub', async (req) => {
+    const s = session(req.params.id);
+    if (!s.meta?.external) throw new HttpError(409, 'only sessions started outside the hub can be taken over');
+    if ((c.hosts.row(s.host_id!) as any)?.status === 'offline') throw new HttpError(409, `${s.host_id} is offline`);
+    return await c.claude.takeover(s.id);
   });
   r.post('/api/sessions/:id/refresh', 'hub', async (req) => {
     const s = session(req.params.id);

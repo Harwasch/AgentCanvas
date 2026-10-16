@@ -93,6 +93,10 @@ export interface HubConfig {
   usagePollIntervalSec: number;
   /** Codex threads already in a host's daemon are shown only if updated within this many days (older ones stay in Codex) */
   codexImportDays: number;
+  /** Claude sessions started outside the hub (Claude app, terminal) are shown read-only if active within this many days; 0 turns it off */
+  claudeImportDays: number;
+  /** how often hosts are scanned for those sessions and their new transcript lines */
+  claudeImportIntervalSec: number;
   githubPollIntervalSec: number;
   metricsIntervalSec: number;
   /** how often the hub asks tmux whether each live Claude session still exists (catches /exit and crashes) */
@@ -144,6 +148,8 @@ const DEFAULTS: HubConfig = {
   cloudPollIntervalSec: 15,
   usagePollIntervalSec: 300,
   codexImportDays: 3,
+  claudeImportDays: 2,
+  claudeImportIntervalSec: 30,
   githubPollIntervalSec: 60,
   metricsIntervalSec: 10,
   claudeLivenessIntervalSec: 60,

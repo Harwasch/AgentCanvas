@@ -18,6 +18,49 @@ const EFFORTS: Record<string, string[]> = {
 const withCur = (list: string[], cur: string | null) => (cur && !list.includes(cur) ? [cur, ...list] : list);
 
 export const nativeLabel = (s: Session) => (s.vendor === 'claude' ? 'Open in claude.ai' : 'Open in ChatGPT');
+/** where a session started outside the hub came from */
+const sourceLabel = (src: unknown) => (src === 'claude-desktop' ? 'Claude app' : src === 'cli' ? 'terminal' : 'outside the hub');
+
+/** Read-only footer of a session started outside the hub, with the take-over confirmation. */
+function ExternalPanel({ s }: { s: Session }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const src = sourceLabel(s.meta?.source);
+  const recentMs = Date.now() - Number(s.meta?.mtime || 0);
+  const maybeOpen = s.status === 'running' || recentMs < 5 * 60_000;
+  const takeover = async () => {
+    setBusy(true);
+    try {
+      await api.takeover(s.id);
+      toast('Taken over: the hub now runs this conversation');
+      setAsking(false);
+    } catch (e) { toast(`Take over failed: ${(e as Error).message}`, 'error'); }
+    setBusy(false);
+  };
+  return (
+    <div className="card" data-testid="external-panel" style={{ padding: '9px 11px', display: 'flex', flexDirection: 'column', gap: 8, flex: 'none' }} onPointerDown={stop}>
+      <span style={{ fontSize: 12, color: '#C9CCD2', lineHeight: 1.45 }}>
+        Started in the <b style={{ fontWeight: 600 }}>{src}</b>. Shown read-only: new messages appear here within about 30 s. Chat, approvals and interrupts stay in the {src}.
+      </span>
+      {asking ? (
+        <>
+          <span style={{ fontSize: 12, color: '#FFD23F', lineHeight: 1.45 }} data-testid="takeover-warning">
+            Close this conversation in the {src} first. The hub resumes it with <span className="mono">claude --resume</span>; two programs writing to one conversation will corrupt it.
+            {maybeOpen ? ` It was active ${timeAgo(Number(s.meta?.mtime) || s.updated_at)}, so it may still be open.` : ''}
+          </span>
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+            <button className="b" style={{ height: 28 }} onClick={() => setAsking(false)} disabled={busy}>Cancel</button>
+            <button className="b bp" style={{ height: 28 }} onClick={takeover} disabled={busy} data-testid="takeover-confirm">{busy ? 'Starting…' : 'It is closed, take over'}</button>
+          </div>
+        </>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+          <button className="b bp" style={{ height: 28 }} onClick={() => setAsking(true)} data-testid="takeover">Take over…</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** seconds until a confirm-tier approval expires (the waiting tool call gives up then), ticking */
 function useExpiresIn(expiresAt: unknown): number | null {
@@ -126,6 +169,7 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
   const waiting = s.status === 'waiting' || approvals.length > 0;
   const running = s.status === 'running';
   const cloud = s.kind === 'cloud';
+  const ext = !!s.meta?.external;
 
   const reply = () => {
     if (mode === 'collapsed') setExpanded(id, true);
@@ -194,8 +238,8 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
             {s.native_url ? <a className="b lnk" style={{ height: 26 }} href={s.native_url} target="_blank" rel="noopener noreferrer" onPointerDown={stop} data-testid="native-link">{nativeLabel(s)} <Icon name="ext" size={11} /></a> : null}
             {!cloud && s.host_id ? <button className="b" style={{ height: 26 }} onPointerDown={stop} data-testid="session-shell" title="Open a shell in this session's working directory"
               onClick={() => openTerminal(s.host_id!, { parentId: s.id, cwd: s.cwd, sessionId: s.id })}><span className="mono" style={{ fontSize: 10.5 }}>&gt;_</span>Shell here</button> : null}
-            {!cloud ? <button className="b" style={{ height: 26 }} onPointerDown={stop} onClick={interrupt} data-testid="chat-interrupt">Interrupt</button> : null}
-            <button className="b desk-only" style={{ height: 26 }} onPointerDown={stop} onClick={stopSession} disabled={s.status === 'ended'}>Stop</button>
+            {!cloud && !ext ? <button className="b" style={{ height: 26 }} onPointerDown={stop} onClick={interrupt} data-testid="chat-interrupt">Interrupt</button> : null}
+            <button className="b desk-only" style={{ height: 26 }} onPointerDown={stop} onClick={stopSession} disabled={s.status === 'ended'} title={ext ? 'Remove from the canvas (the conversation itself is untouched)' : undefined}>{ext ? 'Hide' : 'Stop'}</button>
           </>
         ) : null}
         {mode !== 'sheet' ? (
@@ -213,7 +257,8 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flex: 'none', minWidth: 0 }}>
-        <StatusPill status={waiting ? 'waiting' : s.status} onClick={reply} />
+        <StatusPill status={waiting ? 'waiting' : s.status} onClick={ext ? undefined : reply} />
+        {ext ? <span className="ell" data-testid="external-badge" title="Started outside the hub; take it over to continue it here" style={{ color: '#8A8F98', fontSize: 11.5, border: '1px solid #2A2D33', borderRadius: 999, padding: '1px 7px' }}>read-only · {sourceLabel(s.meta?.source)}</span> : null}
         {cloud ? <span className="ell" style={{ color: '#8A8F98', fontSize: 11.5 }}>cloud {s.meta?.cloudStatus || s.status}{s.meta?.environment ? ` · env ${s.meta.environment}` : ''}{s.meta?.attempts ? ` · ${s.meta.attempts}×` : ''}</span> : null}
         <span className="mono ell" style={{ color: '#8A8F98', fontSize: 11.5, marginLeft: 'auto' }}>{[s.model, s.effort].filter(Boolean).join(' · ') || '—'}{big ? '' : ` · ${duration(s.created_at)}`}</span>
       </div>
@@ -262,6 +307,7 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
               {approvals.map((a) => <ApprovalCard key={a.id} a={a} vendor={s.vendor} />)}
             </div>
           </div>
+          {ext ? <ExternalPanel s={s} /> : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 'none' }} onPointerDown={stop}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', background: '#0E0F12', border: '1px solid #2A2D33', borderRadius: 12, padding: '6px 6px 6px 10px' }}>
               <textarea
@@ -291,6 +337,7 @@ function SessionNodeImpl({ id, mode }: { id: string; mode: SessionMode }) {
               <span style={{ fontSize: 11, color: '#6E727A' }}>{s.kind === 'local' && s.meta?.channel ? `channel ${s.meta.channel} · ` : ''}{timeAgo(s.updated_at)}</span>
             </div>
           </div>
+          )}
         </>
       ) : null}
     </div>

@@ -172,6 +172,8 @@ export function buildGraph(g: GraphInput): Graph {
       const bid = `${pid}#${s.branch || g.checkouts[s.checkout_id || '']?.branch || ''}`;
       parent = brNodeOf[bid] || (cloudBranchOf[s.id] ? brNodeOf[cloudBranchOf[s.id]] : null) || pid;
     } else if (s.checkout_id && byId[s.checkout_id]) parent = s.checkout_id;
+    // a folder outside every root (e.g. a session started in the Claude app elsewhere): under its machine, not loose
+    else if (s.kind === 'local' && s.host_id && hasMachine(s.host_id)) parent = machineNodeId(s.host_id);
     add({ id: s.id, kind: 'session', ref: s.id, w: e ? SESSION_XW : SESSION_W, h: e ? SESSION_XH : loud ? SESSION_LH : SESSION_H, compute: key, parent });
     if (parent) {
       const far = s.kind === 'cloud';

@@ -40,6 +40,13 @@ export function parseTmuxStates(names: string[], stdout: string): Map<string, Tm
   return new Map(names.map((n) => [n, rc.get(n) === 0 ? 'alive' : rc.get(n) === 1 ? 'gone' : 'unknown']));
 }
 
+/** Chat, interrupt and settings are refused for sessions started outside the hub. */
+export class ReadOnlyError extends Error {
+  constructor() {
+    super('read-only: this session was started outside the hub (Claude app or terminal); take it over to continue it here');
+  }
+}
+
 export class ClaudeDriver {
   private live = new Map<string, Live>();
   /** held PermissionRequest hook responses (fallback when no channel) */
@@ -56,9 +63,11 @@ export class ClaudeDriver {
     return d.startsWith('~/') ? `${home}/${d.slice(2)}` : d;
   }
 
-  async start(o: { hostId: string; accountId: string; cwd: string; checkoutId?: string | null; branch?: string | null; prompt?: string; model?: string; title?: string; resumeUuid?: string; role?: 'assistant' }): Promise<Session> {
+  async start(o: { hostId: string; accountId: string; cwd: string; checkoutId?: string | null; branch?: string | null; prompt?: string; model?: string; title?: string; resumeUuid?: string; role?: 'assistant'; reuseId?: string }): Promise<Session> {
     const info = await this.c.boot.ensure(o.hostId);
-    const hubId = newId('cc-');
+    // a take-over keeps the imported row (canvas node, messages, transcript position)
+    const prev = o.reuseId ? this.c.store.session(o.reuseId) : undefined;
+    const hubId = prev?.id ?? newId('cc-');
     const uuid = o.resumeUuid || crypto.randomUUID();
     const repo = o.cwd.split('/').filter(Boolean).pop() || 'repo';
     const tmux = hubId;
@@ -75,7 +84,10 @@ export class ClaudeDriver {
       id: hubId, vendor: 'claude', kind: 'local', host_id: o.hostId, account_id: o.accountId, checkout_id: o.checkoutId ?? null, cwd: o.cwd,
       branch: o.branch ?? null, native_id: uuid, native_url: null, title: o.title || (o.prompt ? o.prompt.slice(0, 60) : `Claude · ${repo}`),
       status: 'starting', model: o.model ?? null, effort: null, last_event: 'launch',
-      meta: { tmux, transcript: ClaudeAdapter.transcriptPath(configDir, o.cwd, uuid), channel: 'disconnected', stok: true, ...(o.role ? { role: o.role } : {}) },
+      meta: {
+        tmux, transcript: prev?.meta.transcript || ClaudeAdapter.transcriptPath(configDir, o.cwd, uuid), channel: 'disconnected', stok: true,
+        ...(o.role ? { role: o.role } : {}), ...(prev ? { external: false, takenOver: Date.now() } : {}),
+      },
     });
     await this.c.hosts.execOk(o.hostId, `${this.tmuxBin(o.hostId)} new-session -d -s ${q(tmux)} -x 220 -y 50 -c ${rpath(o.cwd)} ${q(inner)}`);
     L(`launched ${hubId} on ${o.hostId} in ${o.cwd}`);
@@ -247,7 +259,8 @@ export class ClaudeDriver {
     if (l.tLines != null) this.c.store.patchMetaQuiet(id, { tLines: l.tLines });
   }
 
-  private onTranscript(id: string, line: string) {
+  /** One transcript line → messages (also used by the importer for sessions started outside the hub). */
+  onTranscript(id: string, line: string) {
     for (const it of parseTranscriptLine(line)) {
       let text = it.text;
       let data: any = it.data ?? null;
@@ -305,7 +318,25 @@ export class ClaudeDriver {
     this.c.store.upsertSession({ id, model: o.model ?? s.model, effort: o.effort ?? s.effort });
   }
 
+  /**
+   * Continue a session started outside the hub under the hub's control: `claude --resume <uuid>` in tmux, same
+   * row. The caller has made sure the Claude app or terminal no longer has it open (two writers corrupt it).
+   */
+  async takeover(id: string): Promise<Session> {
+    const s = this.c.store.session(id);
+    if (!s || s.vendor !== 'claude' || !s.meta.external) throw new Error('only sessions started outside the hub can be taken over');
+    if (!s.host_id || !s.cwd || !s.native_id) throw new Error('this session has no host, folder or Claude session id');
+    L(`${id}: taking over ${s.native_id} on ${s.host_id}`);
+    return this.start({ hostId: s.host_id, accountId: s.account_id, cwd: s.cwd, checkoutId: s.checkout_id, branch: s.branch, title: s.title, resumeUuid: s.native_id, reuseId: s.id });
+  }
+
   async stop(id: string) {
+    const ext = this.c.store.session(id);
+    if (ext?.meta.external) {
+      // not ours to stop: take it off the canvas (the importer leaves it hidden)
+      this.c.store.upsertSession({ id, status: 'ended', last_event: 'hidden in hub', meta: { hidden: true } });
+      return;
+    }
     const s = this.need(id);
     const l = this.live.get(id);
     if (l) l.closed = true; // no relay reconnects while tmux goes away
@@ -318,7 +349,9 @@ export class ClaudeDriver {
    * comes back online, and on a timer. A host that cannot be asked (ssh down) leaves its sessions as they are.
    */
   async recover(hostId?: string, o: { startup?: boolean } = {}) {
-    const all = this.c.store.sessions("vendor='claude' AND kind='local' AND status NOT IN ('ended','error')").filter((s) => s.host_id && (!hostId || s.host_id === hostId));
+    const all = this.c.store
+      .sessions("vendor='claude' AND kind='local' AND status NOT IN ('ended','error')")
+      .filter((s) => s.host_id && (!hostId || s.host_id === hostId) && !s.meta.external); // imported sessions have no tmux of ours
     const byHost = new Map<string, Session[]>();
     for (const s of all) byHost.set(s.host_id!, [...(byHost.get(s.host_id!) || []), s]);
     await Promise.all([...byHost].map(async ([h, list]) => {
@@ -430,6 +463,7 @@ export class ClaudeDriver {
   private need(id: string) {
     const s = this.c.store.session(id);
     if (!s || s.vendor !== 'claude' || s.kind !== 'local') throw new Error(`no local claude session ${id}`);
+    if (s.meta.external) throw new ReadOnlyError();
     return s;
   }
 

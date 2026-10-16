@@ -99,6 +99,8 @@ export const api = {
   interrupt: (id: string) => call('POST', `/api/sessions/${enc(id)}/interrupt`, {}),
   settings: (id: string, s: { model?: string; effort?: string }) => call('POST', `/api/sessions/${enc(id)}/settings`, s),
   stop: (id: string) => call('POST', `/api/sessions/${enc(id)}/stop`, {}),
+  /** continue a session started outside the hub (Claude app, terminal) here, with `claude --resume` */
+  takeover: (id: string) => call<Session>('POST', `/api/sessions/${enc(id)}/takeover`, {}),
   refresh: (id: string) => call<any>('POST', `/api/sessions/${enc(id)}/refresh`, {}),
   decide: (id: string, decision: 'allow' | 'deny' | 'allowSession') => call('POST', `/api/approvals/${enc(id)}`, { decision }),
   files: (id: string) => call<{ files: { path: string; xy: string | null }[] }>('GET', `/api/checkouts/${enc(id)}/files`),

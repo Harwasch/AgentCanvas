@@ -77,6 +77,10 @@ export interface Session {
     diffSummary?: string;
     environment?: string;
     attempts?: number;
+    /** started outside the hub (Claude app, terminal): shown read-only until taken over */
+    external?: boolean;
+    /** where it was started: claude-desktop, cli, … */
+    source?: string;
     [k: string]: unknown;
   };
 }

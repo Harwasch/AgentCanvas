@@ -10,6 +10,9 @@ Modes
   hub_channel.py --mcp-only    same hub tools, no channel (Codex [mcp_servers.hub]).
   hub_channel.py relay <id>    byte relay stdio <-> the session socket; the hub runs
                                this over its multiplexed SSH connection.
+  hub_channel.py claude-scan <projects dir> <since ms>
+                               JSON summaries of recent Claude transcripts, for sessions
+                               started outside the hub (shown read-only on the canvas).
   hub_channel.py hook <secs>   Claude Code command hook: POSTs the payload on stdin to
                                HUB_URL/hooks/claude and prints the hub's answer (HTTP hooks
                                cannot reach tailnet addresses).
@@ -390,10 +393,87 @@ def hook(timeout):
     sys.exit(1)
 
 
+def _user_text(rec):
+    """The typed text of a user record, or None (tool results, meta and <command> lines are not prompts)."""
+    if rec.get("isMeta") or rec.get("isSidechain"):
+        return None
+    c = (rec.get("message") or {}).get("content")
+    if isinstance(c, list):
+        c = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+    if not isinstance(c, str):
+        return None
+    c = c.strip()
+    return c if c and not c.startswith(("<", "[Request interrupted")) else None
+
+
+def claude_scan(projects, since_ms, limit=40):
+    """Summaries of Claude transcripts (<projects>/<slug>/<uuid>.jsonl, not subagents) modified since since_ms.
+
+    One JSON array on stdout, newest first; the hub decides which become canvas nodes.
+    """
+    out = []
+    try:
+        slugs = os.listdir(projects)
+    except OSError:
+        slugs = []
+    files = []
+    for slug in slugs:
+        d = os.path.join(projects, slug)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            if not n.endswith(".jsonl"):
+                continue
+            p = os.path.join(d, n)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if st.st_mtime * 1000 >= since_ms:
+                files.append((st.st_mtime, st.st_size, p, n[:-6]))
+    files.sort(reverse=True)
+    for mtime, size, p, sid in files[:limit]:
+        r = {"file": p, "sessionId": sid, "mtime": int(mtime * 1000), "size": size, "lines": 0,
+             "cwd": None, "branch": None, "entrypoint": None, "title": None, "firstPrompt": None}
+        try:
+            with open(p, "rb") as f:
+                for raw in f:
+                    if not raw.endswith(b"\n"):
+                        break  # a line still being written: counted next time
+                    r["lines"] += 1
+                    try:
+                        rec = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    t = rec.get("type")
+                    if t == "custom-title" and rec.get("customTitle"):
+                        r["title"] = str(rec["customTitle"])[:200]
+                    if rec.get("cwd") and not r["cwd"]:
+                        r["cwd"] = rec["cwd"]
+                    if rec.get("gitBranch"):
+                        r["branch"] = rec["gitBranch"]
+                    if rec.get("entrypoint") and not r["entrypoint"]:
+                        r["entrypoint"] = rec["entrypoint"]
+                    if t == "user" and not r["firstPrompt"]:
+                        txt = _user_text(rec)
+                        if txt:
+                            r["firstPrompt"] = txt[:200]
+        except OSError:
+            continue
+        out.append(r)
+    sys.stdout.write(json.dumps(out))
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a and a[0] == "--external":
         external()
+    elif a and a[0] == "claude-scan":
+        claude_scan(a[1], float(a[2]))
     elif a and a[0] == "hook":
         hook(float(a[1]) if len(a) > 1 else 10)
     elif a and a[0] == "relay":

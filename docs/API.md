@@ -65,7 +65,8 @@ Audit    { id, ts, app_node_id, tool, tier, caller, args, allowed, reason, resul
 - `POST /api/sessions/:id/send` `{ text }`
 - `POST /api/sessions/:id/interrupt`
 - `POST /api/sessions/:id/settings` `{ model?, effort? }`
-- `POST /api/sessions/:id/stop`
+- `POST /api/sessions/:id/stop` (for a session started outside the hub: hides it, the conversation is untouched)
+- `POST /api/sessions/:id/takeover`: continue a Claude session started outside the hub (`meta.external`) under the hub with `claude --resume <uuid>`, in the same row. You make sure the Claude app or terminal no longer has it open. `send`, `interrupt` and `settings` answer 409 for such sessions until then.
 - `POST /api/sessions/:id/refresh` (cloud: poll status now; codex cloud: fetch diff)
 - `POST /api/approvals/:id` `{ decision: "allow"|"deny"|"allowSession" }`. **409** `approval already <status>` when it was decided or expired.
   **409** `no longer waiting: …` when nothing can act on the answer any more: the tool call or app call that asked has ended, Claude closed the held hook, the Codex connection that asked was lost, or the session ended. The approval is then marked `expired`.
